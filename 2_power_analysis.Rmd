@@ -1,0 +1,360 @@
+---
+title: "Effect Size"
+author: "Elena Shaw"
+date: "26/06/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(ggplot2)
+library(pwr)
+
+setwd('/Users/elenashaw/Documents/UoE/Dissertation/CancerGenom/code/myCode/')
+data = read.csv('data/2_model_ready_data.csv')
+data_extract = head(data, 100)
+all_qvals = read.csv('data/2_adjusted_qval_comparison.csv')
+# data_pvals = read.csv('data/2_binom_test_data.csv')
+# data_pvals$q_val = p.adjust(data_pvals$exact_bin,method='BY')
+
+total_patients = 59815
+```
+## Read in comparisons 
+```{r}
+all_TPs = read.csv('data/2_all_TPs.csv')
+
+our_cBios = all_TPs %>% filter(comparison=='cBio')
+our_changs = all_TPs %>% filter(comparison=='Chang')
+our_browns = all_TPs %>% filter(comparison=='Brown')
+our_mutagenes_TP = all_TPs %>% filter(comparison=='Mutagene')
+our_cosmic_T1 = all_TPs %>% filter(comparison=='COSMIC_v91')
+
+# 55,203 TPs
+combined_TPs  = all_TPs %>% select(Codon_Id) %>% unique()
+
+all_FPs = read.csv('data/2_potential_FP.csv')
+our_mutagenes_FP = all_FPs %>% filter(comparison=='Mutagene')
+our_brown_FP = all_FPs %>% filter(comparison=='Brown')
+our_full_cosmic = all_FPs %>% filter(comparison=='COSMIC')
+```
+## Compare: Known TP's and FP's
+```{r}
+compare_results = function(ref_table, qval_table, return_table=F) {
+  overlap_df = semi_join(qval_table,ref_table, by="Codon_Id")
+  overlap_recs = overlap_df %>% select(Codon_Id) %>% distinct() %>% nrow()
+  cat('overlapping records:',overlap_recs," / ",nrow(ref_table),"\n")
+  if ('TP' %in% names(overlap_df)) {
+    TP_recs = sum(overlap_df$TP)
+    cat('overlapping TP:',TP_recs," / ",nrow(ref_table),"\n")
+  }
+  if (return_table){
+    return(overlap_df)
+  }
+}
+eval_against_TP = function(results_df, GB_str){
+  cBio_results = compare_results(our_cBios,results_df, return_table=T) %>% 
+                  mutate(comparison='cBio') %>%
+                  group_by_at(GB_str) %>%
+                  tally(name="overlap_rows") %>%
+                  mutate(TP_perc = overlap_rows/nrow(our_cBios))
+  chang_results = compare_results(our_changs,results_df, return_table=T) %>% 
+                    mutate(comparison='Chang') %>%
+                    group_by_at(GB_str) %>%
+                    tally(name="overlap_rows") %>%
+                    mutate(TP_perc = overlap_rows/nrow(our_changs))
+  brown_results = compare_results(our_browns,results_df, return_table=T) %>% 
+                          mutate(comparison='Brown') %>%
+                          group_by_at(GB_str) %>%
+                          tally(name="overlap_rows") %>%
+                          mutate(TP_perc = overlap_rows/nrow(our_browns))
+  mutagene_TP_results = compare_results(our_mutagenes_TP,results_df, return_table=T) %>% 
+                          mutate(comparison='Mutagene') %>%
+                          group_by_at(GB_str) %>%
+                          tally(name="overlap_rows") %>%
+                          mutate(TP_perc = overlap_rows/nrow(our_mutagenes_TP))
+  cosmic_results = compare_results(our_cosmic_T1,results_df, return_table=T) %>% 
+                    mutate(comparison='COSMIC') %>%
+                    group_by_at(GB_str) %>%
+                    tally(name="overlap_rows") %>%
+                    mutate(TP_perc = overlap_rows/nrow(our_cosmic_T1))
+  
+  return (bind_rows(cBio_results,chang_results,brown_results,
+                    mutagene_TP_results,cosmic_results))
+                        
+}
+eval_against_FP = function(results_df, GB_str){
+  mutagene_FP_results = compare_results(our_mutagenes_FP,results_df, return_table=T) %>% 
+                          mutate(comparison='Mutagene') %>%
+                          group_by_at(GB_str) %>%
+                          tally(name="overlap_rows") %>%
+                          mutate(FP_perc = overlap_rows/nrow(our_mutagenes_FP))
+  brown_results = compare_results(our_brown_FP,results_df, return_table=T) %>% 
+                          mutate(comparison='Brown') %>%
+                          group_by_at(GB_str) %>%
+                          tally(name="overlap_rows") %>%
+                          mutate(FP_perc = overlap_rows/nrow(our_brown_FP))
+  # cosmic_results = anti_join(our_full_cosmic, results_df, by='Codon_Id') %>% 
+  #                   mutate(comparison='COSMIC') %>%
+  #                   group_by_at(GB_str) %>%
+  #                   tally(name="overlap_rows") %>%
+  #                   mutate(FP_perc = overlap_rows/nrow(our_full_cosmic))
+  
+  return (bind_rows(mutagene_FP_results,brown_results))#,cosmic_results))
+}
+# compare_results(our_cBios,all_methods, return_table=T)
+```
+
+```{r}
+# 1) compare boxplots of ref TPs
+compare_eff_dfs = function(eff_df){
+  cBio_eff_results = eff_df %>% inner_join(our_cBios, by="Codon_Id") %>% 
+                      mutate(comparison='cBio_TP')
+  chang_eff_results = eff_df %>% inner_join(our_changs, by="Codon_Id") %>% 
+                        mutate(comparison='Chang_TP')
+  brown_TP_eff_results = eff_df %>% inner_join(our_browns, by="Codon_Id") %>% 
+                        mutate(comparison='Brown_TP')
+  brown_FP_eff_results = eff_df %>% inner_join(our_brown_FP, by="Codon_Id") %>% 
+                        mutate(comparison='Brown_FP')
+  mutagene_TP_eff_results = eff_df %>% inner_join(our_mutagenes_TP, by="Codon_Id") %>% 
+                        mutate(comparison='Mutagene_TP')
+  mutagene_FP_eff_results = eff_df %>% inner_join(our_mutagenes_FP, by="Codon_Id") %>% 
+                              mutate(comparison='Mutagene_FP')
+  cosmic_TP_eff_results = eff_df %>% inner_join(our_cosmic_T1, by="Codon_Id") %>% 
+                              mutate(comparison='COSMIC_TP')
+  cosmic_FP_eff_results = eff_df %>% anti_join(our_full_cosmic, by="Codon_Id") %>% 
+                              mutate(comparison='COSMIC_FP')
+  
+  comb_eff_results = bind_rows(cBio_eff_results,chang_eff_results,
+                               brown_TP_eff_results,brown_FP_eff_results,
+                               mutagene_TP_eff_results,mutagene_FP_eff_results,
+                               cosmic_TP_eff_results) 
+  
+  TP_eff_results = bind_rows(cBio_eff_results,chang_eff_results,
+                              brown_TP_eff_results,mutagene_TP_eff_results,
+                              cosmic_TP_eff_results)
+  
+  FP_eff_results = bind_rows(brown_FP_eff_results,mutagene_FP_eff_results,
+                             cosmic_FP_eff_results)
+
+  no_eff_matches = anti_join(eff_df,comb_eff_results, by='Codon_Id') %>%
+                    mutate(comparison='UNK')
+  
+  return(list(TP = TP_eff_results, FP = FP_eff_results, 
+              UNK = no_eff_matches, 
+              all= bind_rows(comb_eff_results,cosmic_FP_eff_results,no_eff_matches)))
+}
+
+# risks_df %>% anti_join(our_full_cosmic, by="Codon_Id") %>% 
+#                               mutate(comparison='COSMIC_FP')
+# compare_eff_dfs(risks_df)$all %>% group_by(comparison) %>% tally()
+```
+
+## Risk
+```{r}
+# Risk Ratio:
+# "the quotient between the risks, resp. probabilities for incidences in two different groups. The risk is computed by dividing the number of incidences by the total number in each group and building the ratio between the groups."
+
+# Odds Ratio:
+# "If for example 10 persons die in a group and 90 survive, than the odds in the groups would be 10/90, whereas the risk would be 10/(90+10). The odds ratio is the quotient between the odds of the two groups."
+
+# Risk Difference:
+# "the difference between two risks. Compared to the ratios, the risks are not divided but subtracted from each other. For the computation of Risk Differences, only the raw data is used, even when calculating variance and standard error. The measure has a disadvantage: It is highly influenced by changes in base rates."
+
+risks_df = data_qvals %>%
+            select(c(Codon_Id,obs.mu,E.mu,q_val)) %>%
+            mutate(risk_ratio = obs.mu/E.mu,
+                   odds_ratio = (obs.mu/(1-obs.mu))/(E.mu/(1-E.mu)),
+                   risk_diff = (obs.mu - E.mu)/total_patients
+                   )
+
+TP_riskXq = compare_eff_dfs(risks_df)$TP %>%
+              pivot_longer(c(risk_ratio,odds_ratio,risk_diff),
+                           names_to = "measure",
+                           values_to = "risk")
+FP_riskXq = compare_eff_dfs(risks_df)$FP %>%
+              pivot_longer(c(risk_ratio,odds_ratio,risk_diff),
+                           names_to = "measure",
+                           values_to = "risk")
+unk_riskXq = compare_eff_dfs(risks_df)$UNK %>%
+              pivot_longer(c(risk_ratio,odds_ratio,risk_diff),
+                           names_to = "measure",
+                           values_to = "risk")
+all_riskXq = compare_eff_dfs(risks_df)$all %>%
+              pivot_longer(c(risk_ratio,odds_ratio,risk_diff),
+                           names_to = "measure",
+                           values_to = "risk")
+
+riskXqval = risks_df %>% 
+              pivot_longer(c(risk_ratio,odds_ratio,risk_diff),
+                           names_to = "measure",
+                           values_to = "risk")
+
+ggplot(all_riskXq %>% filter(measure != "odds_ratio"), aes(x=comparison,y=risk,color=comparison)) +
+  geom_boxplot() +
+  facet_grid(vars(measure),scale="free") #+
+
+ggplot(all_riskXq %>% filter(measure == "risk_diff"), aes(x=comparison,y=risk,color=comparison)) +
+  geom_boxplot() +
+  coord_cartesian(ylim=c(0,3e-8))
+
+ggplot(all_riskXq %>% filter(measure == "risk_ratio"), aes(x=comparison,y=risk,color=comparison)) +
+  geom_boxplot() +
+  coord_cartesian(ylim=c(0,500))
+```
+## Risk X sig
+```{r}
+ggplot(riskXqval %>% filter(measure != "odds_ratio"), aes(log(q_val), log(risk))) + 
+  # geom_point(alpha=0.3) +
+  geom_bin2d(binwidth = c(10, .1)) +
+  facet_wrap(~measure, scale = "free")
+
+ggplot(TP_riskXq , aes(log(q_val), log(risk))) + 
+  geom_point(alpha=0.3) +
+  facet_grid(rows = vars(comparison), cols = vars(measure), scale = "free")
+
+common_metric = "risk_ratio"
+pixel_size = c(50,.5)
+
+ggplot(TP_riskXq %>% filter(measure == common_metric), aes(log(q_val), log(risk))) + 
+  # geom_point(alpha=0.3) +
+  geom_bin2d(binwidth = pixel_size) +
+  facet_wrap(~comparison, scale = "free")
+  # facet_grid(rows = vars(comparison), cols = vars(measure), scale = "free")
+
+ggplot(FP_riskXq %>% filter(measure == common_metric), aes(log(q_val), log(risk))) + 
+  geom_bin2d(binwidth = pixel_size) +
+  facet_grid(cols = vars(comparison), scale = "free")
+
+ggplot(unk_riskXq %>% filter(measure == common_metric), aes(log(q_val), log(risk))) + 
+  geom_point(alpha=0.3) +
+  facet_grid(cols = vars(comparison), scale = "free")
+
+common_metric = "risk_diff"
+pixel_size = c(100,.2)
+
+ggplot(TP_riskXq %>% filter(measure == common_metric), aes(log(q_val), log(risk))) + 
+  # geom_point(alpha=0.3) +
+  geom_bin2d(binwidth = pixel_size) +
+  facet_wrap(~comparison, scale = "free")
+  # facet_grid(rows = vars(comparison), cols = vars(measure), scale = "free")
+
+ggplot(FP_riskXq %>% filter(measure == common_metric), aes(log(q_val), log(risk))) + 
+  geom_bin2d(binwidth = pixel_size) +
+  facet_grid(cols = vars(comparison), scale = "free")
+
+ggplot(unk_riskXq %>% filter(measure == common_metric), aes(log(q_val), log(risk))) + 
+  geom_point(alpha=0.3) +
+  facet_grid(cols = vars(comparison), scale = "free")
+```
+
+## Power Analysis
+```{r}
+std_power = function(h) return(pwr.p.test(h=h, n=total_patients, sig.level=.01, alternative="greater")$power)
+adjust = function(beta) return(p.adjust(1-beta,method='bonferroni'))
+pwr_df = data %>%
+          select(c(Codon_Id,obs.mu,E.mu)) %>%
+          mutate(effect_size_h = 2*(asin(sqrt(obs.mu)) - asin(sqrt(E.mu))),
+                 power = std_power(effect_size_h),
+                 beta = 1-power,
+                 adj_beta = adjust(beta))
+# pwr_df$adj_power = adjust(pwr_df$power)
+
+ref_power = compare_eff_dfs(pwr_df)
+
+ggplot(ref_power$all, aes(x=comparison,y=power,color=comparison)) +
+  geom_boxplot() #+
+  # coord_cartesian(ylim=c(0,.5))+
+  # facet_grid(vars(measure),scale="free") 
+ggplot(ref_power$TP, aes(x=comparison,y=power,color=comparison)) +
+  geom_boxplot() # +
+  # coord_cartesian(ylim=c(0,.5))
+ggplot(ref_power$FP, aes(x=comparison,y=power,color=comparison)) +
+  geom_boxplot() #+
+  # coord_cartesian(ylim=c(0,.5))
+
+refVall = bind_rows(ref_power$all %>% filter(comparison!="UNK") %>% mutate(comparison="all_refs"), pwr_df %>% mutate(comparison="all_data"))
+
+ggplot(refVall, aes(x=comparison,y=power,color=comparison)) +
+  geom_boxplot() +
+  coord_cartesian(ylim=c(0,.5))
+```
+```{r}
+ggplot(ref_power$all, aes(x=comparison,y=beta,color=comparison)) +
+  geom_boxplot() #+
+  # coord_cartesian(ylim=c(0,.5))+
+  # facet_grid(vars(measure),scale="free") 
+# ggplot(ref_power$all, aes(x=comparison,y=adj_beta,color=comparison)) +
+#   geom_boxplot()
+ggplot(ref_power$TP, aes(x=comparison,y=beta,color=comparison)) +
+  geom_boxplot() # +
+  # coord_cartesian(ylim=c(0,.5))
+# ggplot(ref_power$TP, aes(x=comparison,y=adj_beta,color=comparison)) +
+#   geom_boxplot()
+ggplot(ref_power$FP, aes(x=comparison,y=beta,color=comparison)) +
+  geom_boxplot() #+
+  # coord_cartesian(ylim=c(0,.5))
+# ggplot(ref_power$FP, aes(x=comparison,y=adj_beta,color=comparison)) +
+#   geom_boxplot()
+
+betaVall = bind_rows(ref_power$all %>% filter(comparison!="UNK") %>% mutate(comparison="all_refs"), pwr_df %>% mutate(comparison="all_data"))
+
+ggplot(betaVall, aes(x=comparison,y=beta,color=comparison)) +
+  geom_boxplot() #+
+  # coord_cartesian(ylim=c(0,.5))
+# ggplot(betaVall, aes(x=comparison,y=adj_beta,color=comparison)) +
+#   geom_boxplot()
+```
+## Cohen's h
+```{r}
+ggplot(ref_power$all, aes(x=comparison,y=effect_size_h,color=comparison)) +
+  geom_boxplot() #+
+  # facet_grid(vars(measure),scale="free") 
+ggplot(ref_power$TP, aes(x=comparison,y=effect_size_h,color=comparison)) +
+  geom_boxplot() 
+ggplot(ref_power$FP, aes(x=comparison,y=effect_size_h,color=comparison)) +
+  geom_boxplot() 
+
+refVall = bind_rows(ref_power$all %>% filter(comparison!="UNK") %>% mutate(comparison="all_refs"), pwr_df %>% mutate(comparison="all_data"))
+
+ggplot(refVall, aes(x=comparison,y=effect_size_h,color=comparison)) +
+  geom_boxplot() #+
+  # coord_cartesian(ylim=c(0,.5))
+```
+## plotting Effect Size X qval
+```{r}
+esXq = inner_join(pwr_df, data_pvals %>% select(Codon_Id,q_val), 
+                  by=c('Codon_Id'))
+
+# ggplot(esXq , aes(log(q_val), log(effect_size_h))) + 
+#   geom_point(alpha=0.3) +
+#   facet_wrap(~q_method, scale = "free")
+
+com_esXq = compare_eff_dfs(esXq)
+
+ggplot(com_esXq$all , aes(log(q_val), log(effect_size_h))) + 
+  # geom_point(alpha=0.3) +
+  geom_bin2d(binwidth = c(10, .1)) +
+  facet_wrap(~comparison)
+
+# ggplot(com_esXq$TP , aes(log(q_val), log(effect_size_h))) + 
+#   geom_point(alpha=0.3) +
+#   facet_grid(rows = vars(comparison), cols = vars(measure), scale = "free")
+
+pixel_size = c(50,.01)
+
+ggplot(com_esXq$TP , aes(log(q_val), effect_size_h)) + 
+  # geom_point(alpha=0.3) +
+  geom_bin2d(binwidth = pixel_size) +
+  facet_wrap(~comparison, scale = "free")
+  # facet_grid(rows = vars(comparison), cols = vars(measure), scale = "free")
+
+ggplot(com_esXq$FP , aes(log(q_val), effect_size_h)) + 
+  geom_bin2d(binwidth = pixel_size) +
+  facet_grid(cols = vars(comparison), scale = "free")
+
+# ggplot(com_esXq$UNK , aes(log(q_val), effect_size_h)) + 
+#   geom_point(alpha=0.3) +
+#   facet_grid(cols = vars(comparison), scale = "free")
+```

@@ -1,0 +1,392 @@
+---
+title: "binom_test"
+author: "Elena Shaw"
+date: "12/06/2020"
+output: pdf_document
+---
+```{r setup, include=FALSE}
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(ggplot2)
+library(binom)
+
+setwd('/Users/elenashaw/Documents/UoE/Dissertation/CancerGenom/code/myCode/')
+data = read.csv('data/2_model_ready_data.csv')
+data_extract = head(data, 100)
+
+val_data = read.csv('data/2_validation_ready_data.csv')
+
+total_patients = 59815
+```
+## Read in TP comparisons 
+```{r}
+all_TPs = read.csv('data/2_all_TPs.csv')
+
+our_cBios = all_TPs %>% filter(comparison=='cBio')
+our_changs = all_TPs %>% filter(comparison=='Chang')
+our_browns = all_TPs %>% filter(comparison=='Brown')
+our_mutagenes_TP = all_TPs %>% filter(comparison=='Mutagene')
+# our_cosmic_T1 = all_TPs %>% filter(comparison=='COSMIC_v91')
+
+# 55,203 TPs
+combined_TPs  = all_TPs %>% select(Codon_Id) %>% unique()
+```
+
+# Binom test
+```{r}
+# OSBT_fn = function(obs, mu) return (binom.test(obs+1, total_patients, mu, alternative = "greater")$p.value)
+exact_Obin_fn = function(obs,mu) return (pbinom(obs,size=total_patients,prob=mu,lower.tail=FALSE,log.p=F)) # function used by Chang algorithm
+score_fn = function(obs,mu) {
+  mu_hat = obs/total_patients
+  score_stat = (mu_hat - mu)/sqrt(mu_hat*(1-mu_hat)/total_patients)
+  p_val = pchisq(score_stat^2,df=1,lower.tail=F)
+  return(p_val)
+}
+
+data_pvals = read.csv('data/2_binom_test_data.csv')
+# data_pvals = data %>%
+#                 rowwise() %>%
+#                 mutate(exact_bin = exact_Obin_fn(Observations, E.mu),
+#                        score = score_fn(Observations, E.mu)
+#                        )
+# val_pvals = val_data %>%
+#                 rowwise() %>%
+#                 mutate(exact_bin = exact_Obin_fn(Observations, E.mu))
+
+# write.csv(data_pvals,file='data/2_binom_test_data.csv',row.names=F)
+# write.csv(val_pvals,file='data/2_binom_test_validation.csv',row.names=F)
+
+```
+
+```{r}
+# wilson_ci_fn = function() return(binom.confint(obs, total_patients, conf.level=0.95, methods="wilson", ...))
+# jeff_ci_fn = function()
+
+use_p_adjust_method = function(pval_df, method_str) {
+  pval_df = pval_df %>% mutate(q_method=method_str)
+  pval_df$exactqval = p.adjust(pval_df$exact_bin,method=method_str)
+  sig_by_exact = pval_df %>% mutate(q_method='exact')
+
+  return(sig_by_exact)
+}
+
+# # Are NANs p-adjusted? Yes
+# # data_pvals2 = data_pvals %>% mutate(approxO = replace_na(approxO,1))
+# # approxOqval2 = p.adjust(data_pvals2$approxO,method='BY')
+# # as.data.frame(cbind(data_pvals$approxO,approxOqval,data_pvals2$approxO,approxOqval2)) %>% filter(approxOqval != approxOqval2)
+# 
+# # exactqval = p.adjust(data_pvals$exact_bin,method='BY')
+# # LHRqval = p.adjust(data_pvals$LHR,method='BY')
+# # scoreqval = p.adjust(data_pvals$score,method='BY')
+# # 
+# # data_qvals = cbind(data_pvals,OSqval,exactqval,LHRqval,scoreqval)
+
+
+# # 9693 rows / 176,114 rows
+# sig_by_OSq = all_methods_BY %>% filter(p_method == 'Osbt')
+# 9693 rows / 176,114 rows
+# sig_by_exact = all_methods_BY %>% filter(p_method == 'exact')
+# 5012 rows / 176,114 rows
+# sig_by_LHR = all_methods_BY %>% filter(p_method == 'LHR')
+# # 474 rows / 176,114 rows
+# sig_by_score = all_methods_BY %>% filter(p_method == 'score')
+```
+## Compare: Known TP's & TP's found using Chang's algorithm
+```{r}
+compare_results = function(ref_table, qval_table, return_table=F) {
+  overlap_df = semi_join(qval_table,ref_table, by="Codon_Id")
+  overlap_recs = overlap_df %>% select(Codon_Id) %>% distinct() %>% nrow()
+  cat('overlapping records:',overlap_recs," / ",nrow(ref_table),"\n")
+  if ('TP' %in% names(overlap_df)) {
+    TP_recs = sum(overlap_df$TP)
+    cat('overlapping TP:',TP_recs," / ",nrow(ref_table),"\n")
+  }
+  if (return_table){
+    return(overlap_df)
+  }
+}
+# compare_results(our_cBios,all_methods, return_table=T)
+```
+
+What is the TP rate from our 3 references?
+```{r}
+eval_against_TP = function(results_df, GB_str){
+  cBio_results = compare_results(our_cBios,results_df, return_table=T) %>% 
+                  mutate(comparison='cBio') %>%
+                  group_by_at(GB_str) %>%
+                  tally(name="overlap_rows") %>%
+                  mutate(TP_perc = overlap_rows/nrow(our_cBios))
+  chang_results = compare_results(our_changs,results_df, return_table=T) %>% 
+                    mutate(comparison='Chang') %>%
+                    group_by_at(GB_str) %>%
+                    tally(name="overlap_rows") %>%
+                    mutate(TP_perc = overlap_rows/nrow(our_changs))
+  brown_results = compare_results(our_browns,results_df, return_table=T) %>% 
+                          mutate(comparison='Brown') %>%
+                          group_by_at(GB_str) %>%
+                          tally(name="overlap_rows") %>%
+                          mutate(TP_perc = overlap_rows/nrow(our_browns))
+  mutagene_TP_results = compare_results(our_mutagenes_TP,results_df, return_table=T) %>% 
+                          mutate(comparison='Mutagene') %>%
+                          group_by_at(GB_str) %>%
+                          tally(name="overlap_rows") %>%
+                          mutate(TP_perc = overlap_rows/nrow(our_mutagenes_TP))
+  cosmic_results = compare_results(our_cosmic_T1,results_df, return_table=T) %>% 
+                    mutate(comparison='COSMIC') %>%
+                    group_by_at(GB_str) %>%
+                    tally(name="overlap_rows") %>%
+                    mutate(TP_perc = overlap_rows/nrow(our_cosmic_T1))
+  
+  return (bind_rows(cBio_results,chang_results,brown_results,
+                    mutagene_TP_results,cosmic_results))
+                        
+}
+
+combined_compare_df = eval_against_TP(all_methods_BY, c('p_method', 'comparison')) %>%
+  pivot_longer(c(overlap_rows,TP_perc),names_to="metric",values_to="value")
+
+ggplot(combined_compare_df, aes(p_method,value,color=p_method)) +
+  geom_point(size=3) +
+  facet_grid(vars(metric),vars(comparison),scales="free")
+# ggsave("plots/compare_btest_methods.pdf")
+```
+
+Remove the lowest method (i.e. the approx results)
+```{r}
+# highest_method = c('exact','Osbt','Tsbt')
+# highest_compare_df = combined_compare_df %>% filter(p_method %in% highest_method)
+# 
+# highest_compare_df %>% pivot_wider(names_from = metric,values_from = value)
+```
+```{r}
+# ggplot(highest_compare_df, aes(p_method,value,color=p_method)) +
+#   geom_point(size=3) +
+#   facet_grid(vars(metric),vars(comparison),scales="free")
+# # ggsave("compare_btest_highest.pdf")
+```
+
+Phenomenon: Why are we not scoring higher (close to 100%) in the Change category? We technically followed the same procedure?
+Ans:
+- We're using different mutatbility #. But is this enough to explain the difference?
+
+## Add comparison with qval method
+```{r}
+# REDEFINED ABOVE
+# use_p_adjust_method = function(pval_df, method_str) {
+#   pval_df = pval_df %>% mutate(q_method=method_str)
+#   pval_df$exactqval = p.adjust(pval_df$exact_bin,method=method_str)
+#   pval_df$LHRqval = p.adjust(pval_df$LHR,method=method_str)
+#   pval_df$scoreqval = p.adjust(pval_df$score,method=method_str)
+#   
+#   sig_by_exact = pval_df %>% filter(exactqval <.01) %>% mutate(p_method='exact')
+#   sig_by_LHR = pval_df %>% filter(LHRqval <.01) %>% mutate(p_method='LHR')
+#   sig_by_score = pval_df %>% filter(scoreqval <.01) %>% mutate(p_method='score')
+#   return(bind_rows(sig_by_exact,sig_by_LHR,sig_by_score))
+# }
+
+# qval_holm = use_p_adjust_method(data_pvals,'holm') #3680 / 176,109 rows
+# qval_hoch = use_p_adjust_method(data_pvals,'hoch') #3680 / 176,109 rows
+# qval_hommel = use_p_adjust_method(data_pvals,'hommel') #3682 rows ** This takes a long time to run
+# qval_BF = use_p_adjust_method(data_pvals,'bonferr') #3680 rows
+# qval_BH = use_p_adjust_method(data_pvals,'BH') #10085 rows
+# qval_BY = use_p_adjust_method(data_pvals,'BY') #6352 rows
+# qval_fdr = use_p_adjust_method(data_pvals,'fdr') #10085 rows
+
+# all_qvals = bind_rows(qval_holm,qval_hoch,qval_hommel,qval_bonf,qval_BH,qval_BY,qval_fdr)
+# write.csv(all_qvals,file='data/2_adjusted_qval_comparison.csv',row.names = F)
+all_qvals = read.csv('data/2_adjusted_qval_comparison.csv')
+
+eval_qval_df = eval_against_TP(all_qvals,c('p_method','q_method','comparison')) %>%
+                        pivot_longer(c(overlap_rows,TP_perc),
+                                     names_to="metric",
+                                     values_to="value")
+
+
+ggplot(eval_qval_df, aes(q_method,value,color=p_method)) +
+  geom_point(size=3) +
+  facet_grid(vars(metric),vars(comparison),scales="free")+
+  theme(axis.text.x = element_text(angle = 45))
+
+# ggsave("compare_qval_adjust.pdf")
+```
+## For mutations declared significant, how many observations were there?
+```{r}
+ggplot(all_qvals, aes(x=q_method,y=Observations,color=q_method)) +
+  geom_boxplot() +
+  facet_grid(rows=vars(p_method)) +
+  coord_cartesian(ylim=c(0,100))
+
+# all_qvals %>% filter()
+```
+
+## Compare false positives
+```{r}
+all_FPs = read.csv('data/2_potential_FP.csv')
+our_mutagenes_FP = all_FPs %>% filter(comparison=='Mutagene')
+our_brown_FP = all_FPs %>% filter(comparison=='Brown')
+our_full_cosmic = all_FPs %>% filter(comparison=='COSMIC')
+
+# Note, cannot combine FPs since they are potential FP and there is overlap between just the 2 datasets
+
+eval_against_FP = function(results_df, GB_str){
+  mutagene_FP_results = compare_results(our_mutagenes_FP,results_df, return_table=T) %>% 
+                          mutate(comparison='Mutagene') %>%
+                          group_by_at(GB_str) %>%
+                          tally(name="overlap_rows") %>%
+                          mutate(FP_perc = overlap_rows/nrow(our_mutagenes_FP))
+  brown_results = compare_results(our_brown_FP,results_df, return_table=T) %>% 
+                          mutate(comparison='Brown') %>%
+                          group_by_at(GB_str) %>%
+                          tally(name="overlap_rows") %>%
+                          mutate(FP_perc = overlap_rows/nrow(our_brown_FP))
+  # cosmic_results = compare_results(our_full_cosmic,results_df, return_table=T) %>% 
+  #                   mutate(comparison='COSMIC') %>%
+  #                   group_by_at(GB_str) %>%
+  #                   tally(name="overlap_rows") %>%
+  #                   mutate(FP_perc = overlap_rows/nrow(our_full_cosmic))
+  
+  return (bind_rows(mutagene_FP_results,brown_results))#,cosmic_results))
+}
+```
+```{r}
+compare_mutagene_df = eval_against_FP(all_qvals,c("p_method", "q_method", "comparison")) %>%
+                      pivot_longer(c(overlap_rows,FP_perc),names_to="metric",values_to="value")
+
+ggplot(compare_mutagene_df, aes(q_method,value,color=p_method)) +
+  geom_point(size=3) +
+  facet_grid(vars(metric),vars(comparison),scales="free") +
+  theme(axis.text.x = element_text(angle = 45))
+# ggsave("compare_FP.pdf")
+```
+
+## Confidence intervals
+```{r}
+# BH_sig_exactbin = 0.0008863124
+BY_sig_exactbin = 3.913217e-05
+
+BH_critial = data_pvals %>% 
+  mutate(rank = dense_rank(exact_bin),
+         crit_val = rank*.01/nrow(data_pvals),
+         is_less = exact_bin < crit_val) %>%
+  filter(rank == 15614)
+BY_critial = data_pvals %>%
+              mutate(rank = dense_rank(exact_bin),
+                     alpha_prime = (rank/nrow(data_pvals)*(.01/sum(1/1:rank))),
+                     crit_val = rank*.01/nrow(data_pvals),
+                     is_less = exact_bin < alpha_prime) %>%
+              filter(rank == 7268)
+
+BH_sig_exactbin = BH_critial$exact_bin
+BY_sig_exactbin = BY_critial$exact_bin
+
+wilson_BF_CI = binom.confint(data_pvals$E.mu, total_patients,
+                            conf.level=1-2*(.01/(nrow(data))), methods=c("wilson")) %>%
+                select(mean, lower, upper) %>%
+                transmute(BF_CI_mean = mean,
+                          BF_CI_L = lower,
+                           BF_CI_U = upper)
+wilson_BY_CI = binom.confint(data_pvals$E.mu, total_patients,
+                            conf.level=1-2*BY_sig_exactbin, methods=c("wilson")) %>%
+                select(mean, lower, upper) %>%
+                transmute(BY_CI_mean = mean,
+                          BY_CI_L = lower,
+                           BY_CI_U = upper)
+
+wilson_CI = binom.confint(data_pvals$E.mu, total_patients,
+                            conf.level=.98, methods=c("wilson")) %>%
+                select(mean, lower, upper) %>%
+                transmute(CI_mean = mean,
+                          CI_L = lower,
+                           CI_U = upper)
+
+data_p_CI = bind_cols(data_pvals,wilson_BF_CI,wilson_BY_CI) #,wilson_CI) 
+
+# data_p_CI %>% select(c(E.mu,obs.mu,CI_mean,BF_CI_mean,BY_CI_mean,CI_U,BF_CI_U,BY_CI_U))
+
+htest_results = data_p_CI %>%
+                  mutate(BY_qval =  p.adjust(exact_bin, method='BY'),
+                          BF_qval = p.adjust(exact_bin, method='bonferr'),
+                          BF_q_reject = BF_qval<.01,
+                          BY_q_reject = BY_qval<.01,
+                          # p_reject = exact_bin<.01,
+                          # CI_reject = (obs.mu > CI_U),
+                          BF_CI_reject = (obs.mu > BF_CI_U),
+                          BY_CI_reject = (obs.mu > BY_CI_U),
+                          BF_distance = obs.mu - BF_CI_U,
+                          BY_distance = obs.mu - BY_CI_U
+                        )
+
+# write.csv(htest_results,'data/2_qval_CI_test_results.csv', row.names=F)
+
+htest_results %>%
+  pivot_longer(c(BF_q_reject,BY_q_reject,BF_CI_reject,BY_CI_reject,CI_reject,p_reject),
+               names_to = "rejection_metric",
+               values_to = "reject") %>%
+  filter(reject==T) %>%
+  group_by(rejection_metric) %>%
+  tally(name="Significant records")
+
+# BF_q_discoveries = htest_results %>% filter(BF_q_reject==T)
+# BY_q_discoveries = htest_results %>% filter(BY_q_reject==T)
+# BF_CI_discoveries = htest_results %>% filter(BF_CI_reject==T)
+# BY_CI_discoveries = htest_results %>% filter(BY_CI_reject==T)
+# 
+# nrow(BF_q_discoveries)
+# nrow(BY_q_discoveries)
+# nrow(BF_CI_discoveries)
+# nrow(BY_CI_discoveries)
+# nrow(htest_results %>% filter(CI_reject==T))
+```
+## same but for val data set
+```{r}
+# BY_sig_exactbin =  ?
+
+# BY_critial = data_pvals %>%
+#               mutate(rank = dense_rank(exact_bin),
+#                      alpha_prime = (rank/nrow(data_pvals)*(.01/sum(1/1:rank))),
+#                      crit_val = rank*.01/nrow(data_pvals),
+#                      is_less = exact_bin < alpha_prime) %>%
+#               filter(rank == 7268)
+
+BY_sig_exactbin = BY_critial$exact_bin
+
+# wilson_BF_CI = binom.confint(data_pvals$E.mu, total_patients,
+#                             conf.level=1-2*(.01/(nrow(data))), methods=c("wilson")) %>%
+#                 select(mean, lower, upper) %>%
+#                 transmute(BF_CI_mean = mean,
+#                           BF_CI_L = lower,
+#                            BF_CI_U = upper)
+# wilson_BY_CI = binom.confint(data_pvals$E.mu, total_patients,
+#                             conf.level=1-2*BY_sig_exactbin, methods=c("wilson")) %>%
+#                 select(mean, lower, upper) %>%
+#                 transmute(BY_CI_mean = mean,
+#                           BY_CI_L = lower,
+#                            BY_CI_U = upper)
+# 
+# wilson_CI = binom.confint(data_pvals$E.mu, total_patients,
+#                             conf.level=.98, methods=c("wilson")) %>%
+#                 select(mean, lower, upper) %>%
+#                 transmute(CI_mean = mean,
+#                           CI_L = lower,
+#                            CI_U = upper)
+
+# data_p_CI = bind_cols(data_pvals,wilson_BF_CI,wilson_BY_CI) #,wilson_CI) 
+
+val_htest = val_pvals %>%
+                  mutate(BY_qval =  p.adjust(exact_bin, method='BY'),
+                          BF_qval = p.adjust(exact_bin, method='bonferr'),
+                          BF_q_reject = BF_qval<.01,
+                          BY_q_reject = BY_qval<.01
+                        )
+
+# write.csv(val_htest,'data/2_qval_validation_results.csv', row.names=F)
+
+val_htest %>%
+  pivot_longer(c(BF_q_reject,BY_q_reject),
+               names_to = "rejection_metric",
+               values_to = "reject") %>%
+  filter(reject==T) %>%
+  group_by(rejection_metric) %>%
+  tally(name="Significant records")
+```

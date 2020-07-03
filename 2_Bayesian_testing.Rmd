@@ -1,0 +1,300 @@
+---
+title: "Bayesian_testing"
+author: "Elena Shaw"
+date: "21/06/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+library(dplyr)
+library(BayesianFirstAid)
+library(ggmcmc)
+library(ggplot2)
+require(rjags)
+# library(rstan)
+
+# options(mc.cores = parallel::detectCores())
+# rstan_options(auto_write = TRUE)
+
+setwd('/Users/elenashaw/Documents/UoE/Dissertation/CancerGenom/code/myCode/')
+data = read.csv('data/2_model_ready_data.csv')
+
+total_patients = 59815
+unique_CodonIds = nrow(data)
+```
+
+```{r}
+check_diag = function(mcmc_object) {
+  large_sample = effectiveSize(mcmc_object$mcmc_samples)[1]>10000
+  mean_gelman_R = (round(gelman.diag(mcmc_object$mcmc_samples)$psrf[1,1],3)<1.01) &
+                  (round(gelman.diag(mcmc_object$mcmc_samples)$psrf[1,1],3)>.990)
+  upper_gelman_R = (round(gelman.diag(mcmc_object$mcmc_samples)$psrf[1,2],3)<1.03) &
+                    (round(gelman.diag(mcmc_object$mcmc_samples)$psrf[1,2],3)>.990)
+  return(large_sample & mean_gelman_R & upper_gelman_R)
+}
+
+non_convg_ind = c()
+scores = data.frame(post_theta = numeric(unique_CodonIds),
+                    log_score = numeric(unique_CodonIds))
+for (i in 1:unique_CodonIds) {
+  if (i%%100 == 1){
+    cat('current progress: ',i/unique_CodonIds)
+  }
+  Emu = data$E.mu[i]
+  obs = data$Observations[i]
+  mcmc_obj = bayes.binom.test(obs,total_patients, comp.theta=Emu, n.iter=30000)
+  if (!check_diag(mcmc_obj)){
+    non_convg_ind = c(non_convg_ind,i)
+  }
+  post_theta = mcmc_obj$stats[1]
+  scores$post_theta[i] = post_theta
+  scores$log_score[i] = pbinom(Emu,total_patients, post_theta, log.p=T)
+}
+
+post_scores = cbind(data,scores)
+write.csv(post_scores,file='data/2_Bayesian_mcmc_scores.csv',row.names = F)
+```
+
+## Jeffrey's prior
+```{r}
+jeff_test_string = "model{
+  #Likelihood
+  for(i in 1:n) {
+    obs[i] ~ dbin(mu_O[i], patients)
+    mu_O[i] ~ dbeta(.5, .5)
+    x_pred[i] ~ dbinom(mu_O[i], patients)
+  }
+}"
+
+n_chains = 3
+jeff_test_data = list(obs = as.vector(data$Observations), 
+              patients = total_patients,
+              n = nrow(data))
+
+jeff_test_init = list(
+                  list(mu_O = rep(mean(data$obs.mu),nrow(data))),
+                  list(mu_O = rep(1e-18,nrow(data))),
+                  list(mu_O = rep(1e-2,nrow(data)))
+                  )
+
+jeff_test=jags.model(textConnection(jeff_test_string), 
+                       inits = jeff_test_init,
+                       data = jeff_test_data,
+                       n.chains = n_chains)
+update(jeff_test, 1000)
+jeff_test_results=coda.samples(jeff_test,variable.names=c("mu_O","x_pred"), n.iter=30000)
+save(jeff_test_results, file= "data/2_Jeffreys_binom_test.rda")
+```
+## Modeling Informed Prior
+```{r}
+beta_var = function(a,b) return((a*b)/((a+b)^2*(a+b+1)))
+
+estBetaParams <- function(mu, var) {
+  alpha <- ((1 - mu) / var - 1 / mu) * mu ^ 2
+  beta <- alpha * (1 / mu - 1)
+  return(params = list(alpha = alpha, beta = beta))
+}
+
+E_estimates = estBetaParams(mean(data$E.mu),var(data$E.mu))
+O_estimates = estBetaParams(mean(data$obs.mu),var(data$obs.mu))
+
+x = seq(0,.0002,by=.000001)
+E_y = dbeta(x,E_estimates$alpha,E_estimates$beta)
+O_y = dbeta(x,O_estimates$alpha,O_estimates$beta)
+
+# TODO: make ggplot to illustrate prior choices
+# beta_df = bind_cols(x,E_y,O_y)
+# 
+# ggplot(beta_df, aes(x=x, y=len, group=1)) +
+#   geom_line(linetype = "dashed")+
+#   geom_point()
+
+plot(x,E_y,type='l')
+lines(x,O_y,type='l',col="blue")
+abline(v=mean(data$E.mu),col="red")
+abline(v=min(data$E.mu))
+abline(v=max(data$E.mu))
+abline(v=mean(data$obs.mu),col="red")
+abline(v=min(data$obs.mu),col="blue")
+abline(v=max(data$obs.mu),col="blue")
+```
+
+## Binom test w/ informed prior
+```{r}
+# set.seed(1)
+# top_50 = data %>% arrange(desc(Observations)) %>% head(50)
+# rand_50 = data  %>% filter(Observations < 100) %>% sample_n(50)
+# test_data = bind_rows(top_50,rand_50)
+# # write.csv(test_data,file='data/model_test_data.csv',row.names = F)
+
+estBetaParams <- function(mu, var) {
+  alpha <- ((1 - mu) / var - 1 / mu) * mu ^ 2
+  beta <- alpha * (1 / mu - 1)
+  return(params = list(alpha = alpha, beta = beta))
+}
+
+## Cancer:
+## NHS cites 50%
+## American Cancer Society cites 40%
+# Beta(2,2) -> mean 50%, \pm 22%
+## Baseline Mutability:
+## mean: 8.068522e-6 \pm 1.004408e-5
+mu_E_estimates = estBetaParams(mean(data$E.mu),var(data$E.mu))
+## Cancer Mutability:
+## mean: 3.451349e-05 \pm 4.04061e-4
+obs_mu_estimates = estBetaParams(mean(data$obs.mu),var(data$obs.mu))
+
+# info_test_string = "model{
+#   #Likelihood
+#   for(i in 1:n) {
+#     obs[i] ~ dbin(mu_O[i], patients)
+#     mu_O[i] ~ dbeta(obs_a, obs_b)
+#     x_pred[i] ~ dbinom(mu_O[i], patients)
+#   }
+# }"
+## model
+model1a_str = "model{
+  for(i in 1:n) {
+    obs[i] ~ dbin(mu_O[i], patients)
+    mu_O[i] = mu_E[i] + beta[i] * theta_c
+    mu_E[i] ~ dbeta(a,b)
+    beta[i] ~ dunif(-1,1)
+  }
+  theta_c ~ dbeta(c_param,c_param)
+  a ~ dunif(0,1)
+  b ~ dunif(10,100000)
+}"
+
+n_chains = 3
+obs_a = obs_mu_estimates$alpha; obs_b = obs_mu_estimates$beta;
+info_test_data = list(obs = as.vector(data$Observations), 
+              patients = total_patients,
+              n = nrow(data),
+              obs_a = obs_mu_estimates$alpha, obs_b = obs_mu_estimates$beta)
+
+info_test_init = list(
+                  list(mu_O = rep(mean(data$obs.mu),nrow(data))),
+                  list(mu_O = rep(1e-18,nrow(data))),
+                  list(mu_O = rep(1e-2,nrow(data)))
+                  )
+
+info_test=jags.model(textConnection(info_test_string), 
+                       inits = info_test_init,
+                       data = info_test_data,
+                       n.chains = n_chains)
+update(info_test, 1000)
+info_test_results=coda.samples(info_test,variable.names=c("mu_O","x_pred"), n.iter=30000, thin=3)
+save(info_test_results, file= "data/2_informed_binom_test.rda")
+
+# gg_mt = ggs(info_test_results)
+# ggs_traceplot(gg_mt) + 
+#   theme_bw() + 
+#   facet_grid(Parameter ~ Chain, labeller=label_parsed, scale="free") +
+#   theme(axis.text.x = element_text(angle = 45, hjust = 1))
+# ggs_density(gg_mt, greek=T) + 
+#   theme_bw() + 
+#   facet_grid(Chain ~ Parameter, labeller=label_parsed) #+ facet_wrap(~Parameter,ncol=2)
+# ggs_autocorrelation(gg_mt, greek=T) + 
+#   theme_bw()
+
+# effectiveSize(info_test_results[[1]])[effectiveSize(info_test_results[[1]])<10000]
+# sum(effectiveSize(info_test_results[[1]])<10000)
+# gelman.diag(info_test_results)
+# gelman.plot(info_test_results)
+```
+
+
+## Model 1: Logit w/o Protein Length
+```{r}
+estBetaParams <- function(mu, var) {
+  alpha <- ((1 - mu) / var - 1 / mu) * mu ^ 2
+  beta <- alpha * (1 / mu - 1)
+  return(params = list(alpha = alpha, beta = beta))
+}
+
+## Cancer:
+## NHS cites 50%
+## American Cancer Society cites 40%
+# Beta(2,2) -> mean 50%, \pm 22%
+## Baseline Mutability:
+## mean: 8.068522e-6 \pm 1.004408e-5
+Emu_estimates = estBetaParams(mean(data$E.mu),var(data$E.mu))
+## Cancer Mutability:
+## mean: 3.451349e-05 \pm 4.04061e-4
+obs_mu_estimates = estBetaParams(mean(data$obs.mu),var(data$obs.mu))
+
+model1_string = "model{
+  for(i in 1:n) {
+    logit(mu_O[i]) = mu_E[i] + beta[i] * theta_c * PL[i]
+    obs[i] ~ dbin(mu_O[i], patients)
+    mu_E[i] ~ dbeta(a,b)
+    beta[i] ~ dunif(-1,1)
+  }
+  theta_c ~ dbeta(c_param,c_param)
+  a ~ dunif(0,1)
+  b ~ dunif(10,100000)
+}"
+
+model1_init = list(
+  list(theta_c = .5, a = 1e-10, b = 500),
+  list(theta_c = .75, a = 1e-10, b = 10000),
+  list(theta_c = .25, a = 1e-3, b = 5000)
+)
+n_chains = 3
+c_param = 2 
+exp_a = Emu_estimates$alpha; exp_b = Emu_estimates$beta;
+model1_data=list(obs = as.vector(data$Observations), 
+              Emu = as.vector(data$E.mu),
+              patients = total_patients,
+              n = nrow(data), c_param = c_param,
+              exp_a = exp_a, exp_b = exp_b)
+
+model1_init = list(
+                list(theta_c = .5, mu_hat = mean(data$obs.mu), mu_E = mean(data$E.mu))#,
+                # list(theta_c = .75, mu_hat = 1e-10, mu_E = 1e-3),
+                # list(theta_c = .25, mu_hat = 1e-3, mu_E = 1e-10)
+                )
+
+if (full_run){
+  model1=jags.model(textConnection(model1_string), 
+                       inits = model1_init,
+                       data = model1_data,
+                       n.chains = 1)
+  update(model1, 5000)
+  model1_results=coda.samples(model1,variable.names=c("log_c"), n.iter=50000, thin=50)
+} else {
+  load("data/2_Bayes_model1_results.rda")
+}
+
+if (save_run){
+  save(model1_results, file= "data/2_Bayes_model1_results.rda")
+}
+
+## Diagnostics
+gg_m1 = ggs(model1_results)
+ggs_traceplot(gg_m1) + 
+  theme_bw() + 
+  facet_grid(Parameter ~ Chain, labeller=label_parsed, scale="free") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+ggs_density(gg_m1, greek=T) + 
+  theme_bw() + 
+  facet_grid(Chain ~ Parameter, labeller=label_parsed) #+ facet_wrap(~Parameter,ncol=2)
+ggs_autocorrelation(gg_m1, greek=T) + 
+  theme_bw()
+# ggs_Rhat(gg_m1, version_rhat = "BG98") + xlab("R_hat")
+
+effectiveSize(model1_results[[1]])
+gelman.diag(model1_results)
+gelman.plot(model1_results)
+```
+```{r}
+hist(exp(model1_results[[1]]), bins=100)
+
+results_df = as_tibble(model1_results[[1]])
+results_df %>% nrow() 
+results_df %>% ncol() 
+
+results_df %>% mutate_if(is.double())
+#%>% filter()
+```
+
