@@ -1,0 +1,195 @@
+---
+title: "binom_test"
+author: "Elena Shaw"
+date: "12/06/2020"
+output: pdf_document
+---
+```{r setup, include=FALSE}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(binom)
+library(BayesianFirstAid)
+library(ggmcmc)
+require(rjags)
+
+data = read.csv('data/model_ready_data.csv')
+# val_data = read.csv('data/validation_ready_data.csv')
+
+total_patients = 59815
+unique_CodonIds = nrow(data)
+```
+## Read in TP comparisons 
+```{r}
+all_TPs = read.csv('data/all_TPs.csv')
+
+our_chang_TP = all_TPs %>% filter(comparison=='chang_TP')
+our_chang_pred = all_TPs %>% filter(comparison=='chang_pred')
+our_brown_TP = all_TPs %>% filter(comparison=='brown_TP')
+our_li_TP = all_TPs %>% filter(comparison=='li_TP')
+
+# 55,203 TPs
+# combined_TPs  = all_TPs %>% select(Codon_Id) %>% unique()
+```
+
+# Binom test
+```{r}
+binom_test_fn = function(obs,mu) return (pbinom(obs,size=total_patients,prob=mu,lower.tail=FALSE,log.p=F)) # function used by Chang algorithm
+
+data_pvals = read.csv('data/2_binom_test_data.csv')
+data_pvals = data %>%
+                rowwise() %>%
+                mutate(exact_bin = binom_test_fn(Observations, E.mu),
+                       )
+# val_pvals = val_data %>%
+#                 rowwise() %>%
+#                 mutate(exact_bin = binom_test_fn(Observations, E.mu))
+
+# write.csv(data_pvals,file='data/binom_test_data.csv',row.names=F)
+# write.csv(val_pvals,file='data/binom_test_validation.csv',row.names=F)
+
+```
+
+```{r}
+use_p_adjust_method = function(pval_df, method_str) {
+  pval_df = pval_df %>% mutate(q_method=method_str)
+  pval_df$exactqval = p.adjust(pval_df$exact_bin,method=method_str)
+
+  return(pval_df)
+}
+```
+## Compare: Known TP's & TP's found using Chang's algorithm
+```{r}
+compare_results = function(ref_table, qval_table, return_table=F) {
+  overlap_df = semi_join(qval_table,ref_table, by="Codon_Id")
+  overlap_recs = overlap_df %>% select(Codon_Id) %>% distinct() %>% nrow()
+  cat('overlapping records:',overlap_recs," / ",nrow(ref_table),"\n")
+  if ('TP' %in% names(overlap_df)) {
+    TP_recs = sum(overlap_df$TP)
+    cat('overlapping TP:',TP_recs," / ",nrow(ref_table),"\n")
+  }
+  if (return_table){
+    return(overlap_df)
+  }
+}
+```
+
+## Add comparison with qval method
+```{r}
+qval_BF = use_p_adjust_method(data_pvals,'bonferr') #3680 rows
+qval_BY = use_p_adjust_method(data_pvals,'BY') #6352 rows
+
+all_qvals = bind_rows(qval_BF,qval_BY)
+```
+
+## Confidence intervals
+```{r}
+BY_sig_exactbin = 3.913217e-05
+
+BY_critial = data_pvals %>%
+              mutate(rank = dense_rank(exact_bin),
+                     alpha_prime = (rank/nrow(data_pvals)*(.01/sum(1/1:rank))),
+                     crit_val = rank*.01/nrow(data_pvals),
+                     is_less = exact_bin < alpha_prime) %>%
+              filter(rank == 7268)
+
+BH_sig_exactbin = BH_critial$exact_bin
+BY_sig_exactbin = BY_critial$exact_bin
+
+wilson_BF_CI = binom.confint(data_pvals$E.mu, total_patients,
+                            conf.level=1-2*(.01/(nrow(data))), methods=c("wilson")) %>%
+                select(mean, lower, upper) %>%
+                transmute(BF_CI_mean = mean,
+                          BF_CI_L = lower,
+                           BF_CI_U = upper)
+wilson_BY_CI = binom.confint(data_pvals$E.mu, total_patients,
+                            conf.level=1-2*BY_sig_exactbin, methods=c("wilson")) %>%
+                select(mean, lower, upper) %>%
+                transmute(BY_CI_mean = mean,
+                          BY_CI_L = lower,
+                           BY_CI_U = upper)
+
+wilson_CI = binom.confint(data_pvals$E.mu, total_patients,
+                            conf.level=.98, methods=c("wilson")) %>%
+                select(mean, lower, upper) %>%
+                transmute(CI_mean = mean,
+                          CI_L = lower,
+                           CI_U = upper)
+
+data_p_CI = bind_cols(data_pvals,wilson_BF_CI,wilson_BY_CI) #,wilson_CI) 
+
+htest_results = data_p_CI %>%
+                  mutate(BY_qval =  p.adjust(exact_bin, method='BY'),
+                          BF_qval = p.adjust(exact_bin, method='bonferr'),
+                          BF_q_reject = BF_qval<.01,
+                          BY_q_reject = BY_qval<.01,
+                          # p_reject = exact_bin<.01,
+                          # CI_reject = (obs.mu > CI_U),
+                          BF_CI_reject = (obs.mu > BF_CI_U),
+                          BY_CI_reject = (obs.mu > BY_CI_U),
+                          BF_distance = obs.mu - BF_CI_U,
+                          BY_distance = obs.mu - BY_CI_U
+                        )
+
+# write.csv(htest_results,'data/qval_CI_test_results.csv', row.names=F)
+
+htest_results %>%
+  pivot_longer(c(BF_q_reject,BY_q_reject,BF_CI_reject,BY_CI_reject,CI_reject,p_reject),
+               names_to = "rejection_metric",
+               values_to = "reject") %>%
+  filter(reject==T) %>%
+  group_by(rejection_metric) %>%
+  tally(name="Significant records")
+```
+## same but for val data set
+```{r}
+val_htest = val_pvals %>%
+                  mutate(BY_qval =  p.adjust(exact_bin, method='BY'),
+                          BF_qval = p.adjust(exact_bin, method='bonferr'),
+                          BF_q_reject = BF_qval<.01,
+                          BY_q_reject = BY_qval<.01
+                        )
+
+# write.csv(val_htest,'data/val_qval_CI_results.csv', row.names=F)
+
+val_htest %>%
+  pivot_longer(c(BF_q_reject,BY_q_reject),
+               names_to = "rejection_metric",
+               values_to = "reject") %>%
+  filter(reject==T) %>%
+  group_by(rejection_metric) %>%
+  tally(name="Significant records")
+```
+
+## Bayesian Binom test
+```{r}
+check_diag = function(mcmc_object) {
+  large_sample = effectiveSize(mcmc_object$mcmc_samples)[1]>10000
+  mean_gelman_R = (round(gelman.diag(mcmc_object$mcmc_samples)$psrf[1,1],3)<1.01) &
+                  (round(gelman.diag(mcmc_object$mcmc_samples)$psrf[1,1],3)>.990)
+  upper_gelman_R = (round(gelman.diag(mcmc_object$mcmc_samples)$psrf[1,2],3)<1.03) &
+                    (round(gelman.diag(mcmc_object$mcmc_samples)$psrf[1,2],3)>.990)
+  return(large_sample & mean_gelman_R & upper_gelman_R)
+}
+
+non_convg_ind = c()
+scores = data.frame(post_theta = numeric(unique_CodonIds),
+                    log_score = numeric(unique_CodonIds))
+for (i in 1:unique_CodonIds) {
+  if (i%%100 == 1){
+    cat('current progress: ',i/unique_CodonIds)
+  }
+  Emu = data$E.mu[i]
+  obs = data$Observations[i]
+  mcmc_obj = bayes.binom.test(obs,total_patients, comp.theta=Emu, n.iter=30000)
+  if (!check_diag(mcmc_obj)){
+    non_convg_ind = c(non_convg_ind,i)
+  }
+  post_theta = mcmc_obj$stats[1]
+  scores$post_theta[i] = post_theta
+  scores$log_score[i] = pbinom(Emu,total_patients, post_theta, log.p=T)
+}
+
+post_scores = cbind(data,scores)
+write.csv(post_scores,file='data/Bayesian_mcmc_scores.csv',row.names = F)
+```

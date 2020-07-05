@@ -1,0 +1,288 @@
+---
+title: "data_clean"
+author: "Elena Shaw"
+date: "01/06/2020"
+output: pdf_document
+---
+```{r setup=TRUE}
+require(dplyr)
+require(tidyr)
+```
+
+
+## GENIE data
+```{r}
+raw_data = read.delim("data/mutations_data.txt", sep="\t")
+# raw_data = read.delim("data/validation_data.txt", sep="\t")
+
+snv_df = as_tibble(raw_data) %>%
+          filter(Variant_Classification == "Missense_Mutation" & Variant_Type == "SNP") %>%
+          select('Tumor_Sample_Barcode','Hugo_Symbol','Entrez_Gene_Id','NCBI_Build',
+                           'Chromosome','Start_Position', 'End_Position','Variant_Classification',
+                           'Variant_Type','Codons','HGVSp_Short', 'Protein_position')
+
+if (nrow(snv_df != sum(snv_df$Start_Position == snv_df$End_Position))) {
+  warning("anomoly detected in filtered point mutation data.")
+}
+
+# write.csv('data/snv_mutations_min.csv', row.names = F)
+
+data = snv_df %>%
+        distinct() %>%
+        mutate(Protein_position = as.character(Protein_position),
+               HGVSp_Short = as.character(HGVSp_Short),
+               Patient_Id = Tumor_Sample_Barcode) %>%
+          separate(Protein_position, c('Protein_Location', 'Protein_Length'), 
+                     "/", extra = 'drop', remove = T) %>%
+          separate(HGVSp_Short, c(NA,'Mutation'),"[.]", extra = 'drop', remove = T) %>%
+          mutate(Mutated_Amino_Acid = substr(Mutation,1,nchar(Mutation)-1)) %>%
+          unite("Codon_Id", Hugo_Symbol, Mutated_Amino_Acid, remove=F) %>%
+          select(Patient_Id, Hugo_Symbol, Chromosome,
+                Codon_Id, Protein_Location, Protein_Length)
+
+unique_patients = length(unique(data$Patient_Id))
+grouped_cts = data %>% group_by(Codon_Id,Patient_Id) %>%
+                tally(name='Observations') %>%
+                group_by(Codon_Id) %>%
+                tally(name='Observations') %>%
+                mutate(obs.mu = Observations/unique_patients)
+codon_Id_info = data %>% 
+                select(Hugo_Symbol, Chromosome, Codon_Id,
+                      Protein_Location, Protein_Length) %>%
+                distinct()
+grouped_data = left_join(grouped_cts, codon_Id_info, by=c('Codon_Id')) %>%
+                distinct()
+```
+
+## Overlap with Baseline
+```{r}
+baseline = read.csv('data/codon_mutability.csv', header=F) %>%
+              rename(Codon_Id = V1,
+                     E.mu = V2) %>%
+              mutate(Codon_Id = as.character(Codon_Id))
+
+model_data = inner_join(grouped_data,baseline, by=c('Codon_Id'))
+
+# write.csv(model_data, file='data/model_ready_data.csv',row.names = F)
+# write.csv(model_data, file='data/validation_ready_data.csv',row.names = F)
+
+# model_data = read.csv('data/validation_ready_data.csv')
+# model_data = read.csv('data/model_ready_data.csv')
+```
+
+## Overlap with references: TP
+### Chang + (cBio TP)
+```{r}
+# TP file (csv or dmp in RData) has 1358 entries
+# OVerlap is 982 rows
+chang_TP = read.csv('data/Chang_TP_hotspots.csv')
+chang_TP_clean = chang_TP %>%
+              mutate(Gene = as.character(Gene),
+                     Mutation = as.character(Mutation),
+                     Mutated_Amino_Acid = substr(Mutation,1,nchar(Mutation)-1)) %>%
+              unite("Codon_Id", Gene, Mutated_Amino_Acid, remove=F)
+                
+our_chang_TP = semi_join(model_data,chang_TP_clean,by=c('Codon_Id')) %>% 
+                mutate(comparison='chang_TP') %>%
+                select(Codon_Id,comparison) %>% 
+                unique()
+```
+
+```{r}
+# Chang algo output
+## demo_output: 196 TP, 1308 unknown
+# same algo on our dataset: 327 TP, 1302 UNK
+chang_output = read.csv('data/chang_output_clean.csv')
+
+chang_clean = chang_output %>% semi_join(model_data,chang_clean,by=c('Codon_Id')) %>% 
+              mutate(comparison='chang_pred') %>%
+                select(Codon_Id,comparison) %>% 
+                unique()
+```
+Phenonmenon: chang_TP only has 327 overlap with our data vs. TP had 982 overlaps
+Conclusion: Chang's algorithm eliminated 982-327=655 rows from our data
+
+### Li/Mutagene
+```{r}
+# Minghui Li et al.
+# "We compiled a dataset of missense mutations from 58 genes with experimentally validated functional and transforming impacts from different studies."
+# "For our analysis of methods’ performance using a dataset with experimentally determined effects of mutations combined from different studies, we had to apply a pan-cancer mutability model."
+# "We complied a combined dataset of experimentally annotated missense mutations in cancer genes from several sources which were categorized as ‘non-neutral’ or ‘neutral’ based on their experimental effect on protein function, transforming effects, and other characteristics (see Methods)."
+# "Overall, the combined dataset contains 5,276 mutations (4,137neutral and 1,139 non-neutral) from 58 genes"
+
+li = read.csv('data/mutagene_benchmark.csv')
+li_clean = li %>%
+                mutate(Mutation = as.character(mutation),
+                       Hugo_Symbol = as.character(gene),
+                       Mutated_Amino_Acid = substr(Mutation,1,nchar(Mutation)-1)) %>%
+                unite("Codon_Id",Hugo_Symbol,Mutated_Amino_Acid)
+
+li_TP = li_clean %>% 
+              filter(label == "Non-neutral")%>% 
+              group_by(Codon_Id) %>% 
+              summarize(count = sum(count),
+                        mean_mu = mean(mutability),
+                        sd_mu = sd(mutability))
+
+our_li_TP = semi_join(li_TP,model_data,by=c('Codon_Id')) %>%   
+                mutate(comparison='li_TP') %>%
+                select(Codon_Id,comparison) %>% 
+                unique()
+```
+### Brown
+```{r}
+clean_full_mutation = function(x){
+  protein1 = unlist(stringr::str_extract(x, "[A-Z]"))
+  location = unlist(stringr::str_extract(x, "\\d+"))
+  return(paste(protein1,location,sep=""))
+}
+
+brown_raw = read.csv('data/brown_data.csv')
+brown_clean = brown_raw %>% 
+                select(c(gene,mutability,mutation,prediction,count,qvalue)) %>%
+                mutate(Hugo_Symbol = as.character(gene),
+                        mutation = as.character(mutation),
+                        brown_ct = count)
+
+brown_clean$Mutated_Amino_Acid = unlist(lapply(brown_clean$mutation, clean_full_mutation))
+
+brown_TP = brown_clean %>%
+              unite("Codon_Id",Hugo_Symbol,Mutated_Amino_Acid) %>%
+              select(c(Codon_Id,mutability,prediction,brown_ct,qvalue)) %>%
+              filter(prediction=="Driver") %>%
+              group_by(Codon_Id,prediction) %>% 
+              summarize(brown_ct = sum(brown_ct),
+                        mean_mu = mean(mutability),
+                        sd_mu = sd(mutability),
+                        mean_qval = mean(qvalue),
+                        sd_qval = sd(qvalue))
+
+# overlap: 141 Codon_Id's
+our_browns = inner_join(model_data,brown_TP,by='Codon_Id') %>%   
+                mutate(comparison='brown_TP') %>%
+                select(Codon_Id,comparison) %>% 
+                unique()
+```
+
+### Combine all TP
+```{r}
+TP_df = bind_rows(our_chang_TP, chang_clean, our_browns, our_li_TP) 
+
+TP_df %>% group_by(comparison) %>% tally()
+
+# write.csv(TP_df,file='data/all_TPs.csv',row.names = F)
+# write.csv(TP_df,file='data/validation_TPs.csv',row.names = F)
+```
+
+
+## Overlap with references: potential FP
+### Li/Mutagene FP
+```{r}
+li_FP = li_clean %>% 
+              filter(label == "Neutral")%>% 
+              group_by(Codon_Id)
+
+our_li_FP = semi_join(model_data,li_FP,by=c('Codon_Id')) %>%   
+                mutate(comparison='li_FP') %>%
+                select(Codon_Id,comparison) %>% 
+                unique()
+```
+
+### If NOT in COSMIC v91 or v85
+note: v91 has 17,081 more Codon_Id mutations not present in v85
+```{r}
+cosmicV91_raw = read.csv('data/COSMIC_v91_GRCh37.tsv',sep="\t")
+
+cosmicV91_mis = cosmicV91_raw %>% filter(Mutation.Description=="Substitution - Missense")
+
+cosmicV91_clean = cosmicV91_mis %>% 
+                    select(c(Gene.name,Mutation.AA,Tier)) %>% 
+                    unique() %>%
+                    transmute(Hugo_Symbol = as.character(Gene.name),
+                              HGVSp_Short = as.character(Mutation.AA),
+                              Tier = Tier) %>%
+                    separate(HGVSp_Short, c(NA,'Mutation'),"[.]", extra = 'drop', remove = T) %>%
+                    mutate(Mutated_Amino_Acid = substr(Mutation,1,nchar(Mutation)-1)) %>%
+                    unite("Codon_Id", Hugo_Symbol, Mutated_Amino_Acid, remove=F)
+
+cosmicV91 = cosmicV91_clean %>%
+              select(c(Codon_Id,Tier)) %>%
+              distinct() %>%
+              mutate(version="v91")
+
+cosmicV85_raw = read.csv('data/COSMIC_v85_GRCh37.tsv',sep="\t")
+
+cosmicV85_mis = cosmicV85_raw %>% filter(Mutation.Description=="Substitution - Missense")
+
+cosmicV85_clean = cosmicV85_mis %>%
+                    select(c(Gene.name,Mutation.AA,Tier)) %>% 
+                    unique() %>%
+                    transmute(Hugo_Symbol = as.character(Gene.name),
+                              HGVSp_Short = as.character(Mutation.AA),
+                              Tier = Tier) %>%
+                    separate(HGVSp_Short, c(NA,'Mutation'),"[.]", extra = 'drop', remove = T) %>%
+                    mutate(Mutated_Amino_Acid = substr(Mutation,1,nchar(Mutation)-1)) %>%
+                    unite("Codon_Id", Hugo_Symbol, Mutated_Amino_Acid, remove=F)
+
+cosmicV85 = cosmicV85_clean %>%
+              select(c(Codon_Id,Tier)) %>%
+              distinct() %>%
+              mutate(version="v85")
+
+# 209,445 unique Codon_Ids
+full_cosmic = full_join(cosmicV85,cosmicV91,by=c('Codon_Id','Tier')) %>%   
+                mutate(comparison='COSMIC')
+
+our_full_cosmic = inner_join(model_data, full_cosmic, by='Codon_Id') %>%
+                  select(Codon_Id,comparison) %>% 
+                  unique()
+
+# write.csv(our_full_cosmic,file='data/full_cosmic.csv',row.names = F)
+# write.csv(our_full_cosmic,file='data/val_full_cosmic.csv',row.names = F)
+# our_full_cosmic = read.csv('data/full_cosmic.csv')
+# our_full_cosmic = read.csv('data/val_full_cosmic.csv')
+```
+## Brown FP
+```{r}
+# 764 overlap with Mutagene_FP
+brown_FP = brown_clean %>%
+            unite("Codon_Id",Hugo_Symbol,Mutated_Amino_Acid) %>%
+            filter(prediction=="Passenger") %>%
+            select(c(Codon_Id,mutability,prediction,brown_ct,qvalue)) %>%
+            group_by(Codon_Id,prediction) %>% 
+            summarize(brown_ct = sum(brown_ct))
+
+# overlap: 141 Codon_Id's
+our_brown_FP = inner_join(model_data,brown_FP,by='Codon_Id') %>%   
+                  mutate(comparison='brown_FP') %>%
+                  select(Codon_Id,comparison) %>% 
+                  unique()
+```
+## Join FPs
+```{r}
+potential_FPs = bind_rows(our_li_FP,our_brown_FP)
+
+potential_FPs %>% group_by(comparison) %>% tally()
+
+# write.csv(potential_FPs,file='data/potential_FP.csv',row.names = F)
+# write.csv(potential_FPs,file='data/validation_FP.csv',row.names = F)
+```
+
+## 10,000 row extract
+```{r}
+data = read.csv('data/model_ready_data.csv')
+our_full_cosmic = read.csv('data/full_cosmic.csv')
+all_TPs = read.csv('data/all_TPs.csv') %>% select(Codon_Id) %>% unique()
+all_FPs = read.csv('data/potential_FP.csv') %>% select(Codon_Id) %>% unique()
+
+all_ref = bind_rows(all_TPs,all_FPs, our_full_cosmic) %>% distinct()
+
+ref_data = inner_join(data,all_ref,by='Codon_Id')
+
+set.seed(1)
+top_n = ref_data %>% arrange(desc(Observations)) %>% head(500)
+rand_n = ref_data %>% sample_n(9576, replace=F)
+ex_rand_n = anti_join(rand_n,top_n,by='Codon_Id')
+test_data = bind_rows(top_n,ex_rand_n)
+write.csv(test_data, file='data/model_extract_data_5000.csv')
+```

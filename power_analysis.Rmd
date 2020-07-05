@@ -1,0 +1,212 @@
+---
+title: "Effect Size"
+author: "Elena Shaw"
+date: "26/06/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(pwr)
+
+data = read.csv('data/model_ready_data.csv')
+all_qvals = read.csv('data/adjusted_qval_comparison.csv')
+
+total_patients = 59815
+```
+## Read in comparisons 
+```{r}
+all_TPs = read.csv('data/all_TPs.csv')
+
+our_cBios = all_TPs %>% filter(comparison=='chang_TP')
+our_changs = all_TPs %>% filter(comparison=='chang_pred')
+our_browns = all_TPs %>% filter(comparison=='brown_TP')
+our_mutagenes_TP = all_TPs %>% filter(comparison=='li_TP')
+
+# 55,203 TPs
+combined_TPs  = all_TPs %>% select(Codon_Id) %>% unique()
+
+all_FPs = read.csv('data/potential_FP.csv')
+our_mutagenes_FP = all_FPs %>% filter(comparison=='li_FP')
+our_brown_FP = all_FPs %>% filter(comparison=='brown_FP')
+our_full_cosmic = read.csv('data/full_cosmic.csv')
+```
+
+## Risk
+```{r}
+# Risk Ratio:
+# "the quotient between the risks, resp. probabilities for incidences in two different groups. The risk is computed by dividing the number of incidences by the total number in each group and building the ratio between the groups."
+
+# Odds Ratio:
+# "If for example 10 persons die in a group and 90 survive, than the odds in the groups would be 10/90, whereas the risk would be 10/(90+10). The odds ratio is the quotient between the odds of the two groups."
+
+# Risk Difference:
+# "the difference between two risks. Compared to the ratios, the risks are not divided but subtracted from each other. For the computation of Risk Differences, only the raw data is used, even when calculating variance and standard error. The measure has a disadvantage: It is highly influenced by changes in base rates."
+
+risks_df = data_qvals %>%
+            select(c(Codon_Id,obs.mu,E.mu,q_val)) %>%
+            mutate(risk_ratio = obs.mu/E.mu,
+                   odds_ratio = (obs.mu/(1-obs.mu))/(E.mu/(1-E.mu)),
+                   risk_diff = (obs.mu - E.mu)/total_patients
+                   )
+
+TP_riskXq = compare_eff_dfs(risks_df)$TP %>%
+              pivot_longer(c(risk_ratio,odds_ratio,risk_diff),
+                           names_to = "measure",
+                           values_to = "risk")
+FP_riskXq = compare_eff_dfs(risks_df)$FP %>%
+              pivot_longer(c(risk_ratio,odds_ratio,risk_diff),
+                           names_to = "measure",
+                           values_to = "risk")
+unk_riskXq = compare_eff_dfs(risks_df)$UNK %>%
+              pivot_longer(c(risk_ratio,odds_ratio,risk_diff),
+                           names_to = "measure",
+                           values_to = "risk")
+all_riskXq = compare_eff_dfs(risks_df)$all %>%
+              pivot_longer(c(risk_ratio,odds_ratio,risk_diff),
+                           names_to = "measure",
+                           values_to = "risk")
+
+riskXqval = risks_df %>% 
+              pivot_longer(c(risk_ratio,odds_ratio,risk_diff),
+                           names_to = "measure",
+                           values_to = "risk")
+
+ggplot(all_riskXq %>% filter(measure != "odds_ratio"), aes(x=comparison,y=risk,color=comparison)) +
+  geom_boxplot() +
+  facet_grid(vars(measure),scale="free")
+
+ggplot(all_riskXq %>% filter(measure == "risk_diff"), aes(x=comparison,y=risk,color=comparison)) +
+  geom_boxplot() +
+  coord_cartesian(ylim=c(0,3e-8))
+
+ggplot(all_riskXq %>% filter(measure == "risk_ratio"), aes(x=comparison,y=risk,color=comparison)) +
+  geom_boxplot() +
+  coord_cartesian(ylim=c(0,500))
+```
+## Risk X sig
+```{r}
+ggplot(riskXqval %>% filter(measure != "odds_ratio"), aes(log(q_val), log(risk))) + 
+  # geom_point(alpha=0.3) +
+  geom_bin2d(binwidth = c(10, .1)) +
+  facet_wrap(~measure, scale = "free")
+
+ggplot(TP_riskXq , aes(log(q_val), log(risk))) + 
+  geom_point(alpha=0.3) +
+  facet_grid(rows = vars(comparison), cols = vars(measure), scale = "free")
+
+common_metric = "risk_ratio"
+pixel_size = c(50,.5)
+
+ggplot(TP_riskXq %>% filter(measure == common_metric), aes(log(q_val), log(risk))) + 
+  # geom_point(alpha=0.3) +
+  geom_bin2d(binwidth = pixel_size) +
+  facet_wrap(~comparison, scale = "free")
+  # facet_grid(rows = vars(comparison), cols = vars(measure), scale = "free")
+
+ggplot(FP_riskXq %>% filter(measure == common_metric), aes(log(q_val), log(risk))) + 
+  geom_bin2d(binwidth = pixel_size) +
+  facet_grid(cols = vars(comparison), scale = "free")
+
+ggplot(unk_riskXq %>% filter(measure == common_metric), aes(log(q_val), log(risk))) + 
+  geom_point(alpha=0.3) +
+  facet_grid(cols = vars(comparison), scale = "free")
+
+common_metric = "risk_diff"
+pixel_size = c(100,.2)
+
+ggplot(TP_riskXq %>% filter(measure == common_metric), aes(log(q_val), log(risk))) + 
+  # geom_point(alpha=0.3) +
+  geom_bin2d(binwidth = pixel_size) +
+  facet_wrap(~comparison, scale = "free")
+  # facet_grid(rows = vars(comparison), cols = vars(measure), scale = "free")
+
+ggplot(FP_riskXq %>% filter(measure == common_metric), aes(log(q_val), log(risk))) + 
+  geom_bin2d(binwidth = pixel_size) +
+  facet_grid(cols = vars(comparison), scale = "free")
+
+ggplot(unk_riskXq %>% filter(measure == common_metric), aes(log(q_val), log(risk))) + 
+  geom_point(alpha=0.3) +
+  facet_grid(cols = vars(comparison), scale = "free")
+```
+
+## Power Analysis
+```{r}
+std_power = function(h) return(pwr.p.test(h=h, n=total_patients, sig.level=.01, alternative="greater")$power)
+adjust = function(beta) return(p.adjust(1-beta,method='bonferroni'))
+pwr_df = data %>%
+          select(c(Codon_Id,obs.mu,E.mu)) %>%
+          mutate(effect_size_h = 2*(asin(sqrt(obs.mu)) - asin(sqrt(E.mu))),
+                 power = std_power(effect_size_h),
+                 beta = 1-power,
+                 adj_beta = adjust(beta))
+
+ref_power = compare_eff_dfs(pwr_df)
+
+ggplot(ref_power$all, aes(x=comparison,y=power,color=comparison)) +
+  geom_boxplot()
+
+ggplot(ref_power$TP, aes(x=comparison,y=power,color=comparison)) +
+  geom_boxplot() 
+ggplot(ref_power$FP, aes(x=comparison,y=power,color=comparison)) +
+  geom_boxplot()
+
+refVall = bind_rows(ref_power$all %>% filter(comparison!="UNK") %>% mutate(comparison="all_refs"), pwr_df %>% mutate(comparison="all_data"))
+
+ggplot(refVall, aes(x=comparison,y=power,color=comparison)) +
+  geom_boxplot() +
+  coord_cartesian(ylim=c(0,.5))
+```
+```{r}
+ggplot(ref_power$all, aes(x=comparison,y=beta,color=comparison)) +
+  geom_boxplot() 
+
+ggplot(ref_power$TP, aes(x=comparison,y=beta,color=comparison)) +
+  geom_boxplot() 
+
+ggplot(ref_power$FP, aes(x=comparison,y=beta,color=comparison)) +
+  geom_boxplot() 
+
+betaVall = bind_rows(ref_power$all %>% filter(comparison!="UNK") %>% mutate(comparison="all_refs"), pwr_df %>% mutate(comparison="all_data"))
+
+ggplot(betaVall, aes(x=comparison,y=beta,color=comparison)) +
+  geom_boxplot()
+```
+## Cohen's h
+```{r}
+ggplot(ref_power$all, aes(x=comparison,y=effect_size_h,color=comparison)) +
+  geom_boxplot()
+
+ggplot(ref_power$TP, aes(x=comparison,y=effect_size_h,color=comparison)) +
+  geom_boxplot() 
+ggplot(ref_power$FP, aes(x=comparison,y=effect_size_h,color=comparison)) +
+  geom_boxplot() 
+
+refVall = bind_rows(ref_power$all %>% filter(comparison!="UNK") %>% mutate(comparison="all_refs"), pwr_df %>% mutate(comparison="all_data"))
+
+ggplot(refVall, aes(x=comparison,y=effect_size_h,color=comparison)) +
+  geom_boxplot()
+```
+## plotting Effect Size X qval
+```{r}
+esXq = inner_join(pwr_df, data_pvals %>% select(Codon_Id,q_val), 
+                  by=c('Codon_Id'))
+
+com_esXq = compare_eff_dfs(esXq)
+
+ggplot(com_esXq$all , aes(log(q_val), log(effect_size_h))) + 
+  geom_bin2d(binwidth = c(10, .1)) +
+  facet_wrap(~comparison)
+
+pixel_size = c(50,.01)
+
+ggplot(com_esXq$TP , aes(log(q_val), effect_size_h)) + 
+  geom_bin2d(binwidth = pixel_size) +
+  facet_wrap(~comparison, scale = "free")
+
+ggplot(com_esXq$FP , aes(log(q_val), effect_size_h)) + 
+  geom_bin2d(binwidth = pixel_size) +
+  facet_grid(cols = vars(comparison), scale = "free")
+```

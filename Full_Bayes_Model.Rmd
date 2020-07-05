@@ -1,0 +1,372 @@
+---
+title: "Analysis 10k extract"
+author: "Elena Shaw"
+date: "30/06/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+library(dplyr)
+library(ggmcmc)
+library(rjags)
+library(ggplot2)
+
+data = read.csv('data/2_model_extract_data_5000.csv')
+
+total_patients = 59815
+```
+```{r}
+all_TPs = read.csv('data/2_all_TPs.csv')
+
+our_cBios = all_TPs %>% filter(comparison=='cBio_TP') %>% select(Codon_Id,comparison) %>% unique()
+our_changs = all_TPs %>% filter(comparison=='Chang_TP') %>% select(Codon_Id,comparison) %>% unique()
+our_browns = all_TPs %>% filter(comparison=='Brown_TP') %>% select(Codon_Id,comparison) %>% unique()
+our_mutagenes_TP = all_TPs %>% filter(comparison=='Mutagene_TP') %>% select(Codon_Id,comparison) %>% unique()
+
+# 55,203 TPs
+combined_TPs = all_TPs %>% select(Codon_Id,comparison) %>% unique()
+consensus_TPs = inner_join(
+                  inner_join(
+                    inner_join(our_cBios,our_changs, by='Codon_Id'),
+                    our_browns, by='Codon_Id'),
+                  our_mutagenes_TP, by='Codon_Id') %>% mutate(comparison='consensus')
+
+all_FPs = read.csv('data/2_potential_FP.csv')
+our_mutagenes_FP = all_FPs %>% filter(comparison=='Mutagene_FP') %>% select(Codon_Id,comparison) %>% unique()
+our_brown_FP = all_FPs %>% filter(comparison=='Brown_FP') %>% select(Codon_Id) %>% unique() %>% mutate(comparison = 'Brown_FP')
+our_full_cosmic = all_FPs %>% filter(comparison=='COSMIC') %>% select(Codon_Id,comparison) %>% unique()
+
+combined_FPs= all_FPs %>% filter(comparison!='COSMIC') %>% select(Codon_Id,comparison) %>% unique()
+
+all_drivers = bind_rows(combined_TPs,combined_FPs) %>% select(Codon_Id,comparison) %>% unique()
+all_kwn_codons = bind_rows(all_drivers,our_full_cosmic) %>% select(Codon_Id,comparison) %>% unique()
+
+ref_labels = c("False Positive","True Positive","True Negative")
+names(ref_labels) = c("FP","TP","TN")
+```
+```{r}
+ex_ref_perc_overlap = function(result_df) {
+  result = full_join(result_df,labels_in_extract, by='ref_label') %>% 
+              mutate(perc_overlap = n/ref_records,
+                     ref_label=factor(ref_label, 
+                                    levels=c("negatives","positives")))
+  return(result)
+}
+
+match_to_refs = function(df){
+  cBio_results = df %>% semi_join(our_cBios, by="Codon_Id") %>% mutate(comparison='cBio_TP')
+  chang_results = df %>% semi_join(our_changs, by="Codon_Id") %>% mutate(comparison='Chang_TP')
+  brown_TP_results = df %>% semi_join(our_browns, by="Codon_Id") %>% mutate(comparison='Brown_TP')
+  brown_FP_results = df %>% semi_join(our_brown_FP, by="Codon_Id") %>% mutate(comparison='Brown_FP')
+  mutagene_TP_results = df %>% semi_join(our_mutagenes_TP, by="Codon_Id") %>% mutate(comparison='Mutagene_TP')
+  mutagene_FP_results = df %>% semi_join(our_mutagenes_FP, by="Codon_Id") %>% mutate(comparison='Mutagene_FP')
+  cosmic_results = df %>% anti_join(our_full_cosmic, by="Codon_Id") %>% mutate(comparison='UNK')
+  consensus_results = df %>% semi_join(consensus_TPs, by='Codon_Id')  %>% mutate(comparison='consensus')
+  
+  comb_results = bind_rows(cBio_results,chang_results,
+                               brown_TP_results,brown_FP_results,
+                               mutagene_TP_results,mutagene_FP_results) 
+  
+  TP_results = bind_rows(cBio_results, mutagene_TP_results, consensus_results,
+                         chang_results, brown_TP_results) %>% 
+                mutate(ref_grp = 'TP')
+  
+  FP_results = bind_rows(mutagene_FP_results,brown_FP_results) %>% 
+                mutate(ref_grp = 'FP')
+
+  TN_results = anti_join(df,comb_results, by='Codon_Id') %>%
+                semi_join(cosmic_results, by='Codon_Id') %>%
+                mutate(comparison='UNK',
+                       ref_grp = 'TN')
+  all_results = bind_rows(TP_results, FP_results, TN_results) %>%
+                mutate(comparison = factor(comparison),
+                       ref_grp = factor(ref_grp,
+                                         levels=c("FP","TP","TN"))
+                )
+  div_results = bind_rows( 
+            TP_results%>% mutate(ref_label = "positives"),
+            bind_rows(TN_results,FP_results) %>% mutate(ref_label = "negatives")
+           )
+  
+  return(list(TP = TP_results, FP = FP_results, 
+              TN = TN_results, 
+              all = all_results, div = div_results))
+}
+```
+
+## Model 1: Logit w/o Protein Length
+```{r}
+estBetaParams <- function(mu, var) {
+  alpha <- ((1 - mu) / var - 1 / mu) * mu ^ 2
+  beta <- alpha * (1 / mu - 1)
+  return(params = list(alpha = alpha, beta = beta))
+}
+
+## Cancer:
+## NHS cites 50%
+## American Cancer Society cites 40%
+# Beta(2,2) -> mean 50%, \pm 22%
+## Baseline Mutability:
+## mean: 8.068522e-6 \pm 1.004408e-5
+Emu_estimates = estBetaParams(mean(data$E.mu),var(data$E.mu))
+## Cancer Mutability:
+## mean: 3.451349e-05 \pm 4.04061e-4
+obs_mu_estimates = estBetaParams(mean(data$obs.mu),var(data$obs.mu))
+
+model1_string = "model{
+  for(i in 1:n) {
+    logit(mu_O[i]) = mu_E[i] + beta[i] * theta_c * PL[i]
+    obs[i] ~ dbin(mu_O[i], patients)
+    mu_E[i] ~ dbeta(a,b)
+    beta[i] ~ dunif(-1,1)
+  }
+  theta_c ~ dbeta(c_param,c_param)
+  a ~ dunif(0,1)
+  b ~ dunif(10,100000)
+}"
+
+model1_init = list(
+  list(theta_c = .5, a = 1e-10, b = 500),
+  list(theta_c = .75, a = 1e-10, b = 10000),
+  list(theta_c = .25, a = 1e-3, b = 5000)
+)
+n_chains = 3
+c_param = 2 
+exp_a = Emu_estimates$alpha; exp_b = Emu_estimates$beta;
+model1_data=list(obs = as.vector(data$Observations), 
+              Emu = as.vector(data$E.mu),
+              patients = total_patients,
+              n = nrow(data), c_param = c_param,
+              exp_a = exp_a, exp_b = exp_b)
+
+model1_init = list(
+                list(theta_c = .5, mu_hat = mean(data$obs.mu), mu_E = mean(data$E.mu))#,
+                # list(theta_c = .75, mu_hat = 1e-10, mu_E = 1e-3),
+                # list(theta_c = .25, mu_hat = 1e-3, mu_E = 1e-10)
+                )
+
+if (full_run){
+  model1=jags.model(textConnection(model1_string), 
+                       inits = model1_init,
+                       data = model1_data,
+                       n.chains = 1)
+  update(model1, 5000)
+  model1_results=coda.samples(model1,variable.names=c("log_c"), n.iter=50000, thin=50)
+} else {
+  load("data/2_Bayes_model1_results.rda")
+}
+
+if (save_run){
+  save(model1_results, file= "data/2_Bayes_model1_results.rda")
+}
+
+## Diagnostics
+gg_m1 = ggs(model1_results)
+ggs_traceplot(gg_m1) + 
+  theme_bw() + 
+  facet_grid(Parameter ~ Chain, labeller=label_parsed, scale="free") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+ggs_density(gg_m1, greek=T) + 
+  theme_bw() + 
+  facet_grid(Chain ~ Parameter, labeller=label_parsed) #+ facet_wrap(~Parameter,ncol=2)
+ggs_autocorrelation(gg_m1, greek=T) + 
+  theme_bw()
+# ggs_Rhat(gg_m1, version_rhat = "BG98") + xlab("R_hat")
+
+effectiveSize(model1_results[[1]])
+gelman.diag(model1_results)
+gelman.plot(model1_results)
+```
+```{r}
+chain_1 = list(stats = summary(model1a_results[[1]])$statistics, 
+               quantiles = summary(model1a_results[[1]])$quantiles)
+# write.csv(as.data.frame(chain_1),'data/2_basic_model_10k_chain1.csv',row.names = F)
+
+basic_results = as.data.frame(chain_1)
+
+PL_chain_3 = list(stats = summary(model1b_results[[3]])$statistics, 
+               quantiles = summary(model1b_results[[3]])$quantiles)
+# write.csv(as.data.frame(chain_1),'data/2_basic_model_10k_chain1.csv',row.names = F)
+
+
+PL_results = as.data.frame(PL_chain_3)
+# write.csv(as.data.frame(PL_chain_1),'data/2_PL_model_10k_chain1.csv',row.names = F)
+
+# gg_mt = ggs(model1a_results)
+# ggs_traceplot(gg_mt) +
+#   theme_bw() +
+#   facet_grid(Parameter ~ Chain, labeller=label_parsed, scale="free") +
+#   theme(axis.text.x = element_text(angle = 45, hjust = 1))
+# ggs_density(gg_mt, greek=T) +
+#   theme_bw() +
+#   facet_grid(Chain ~ Parameter, labeller=label_parsed) #+ facet_wrap(~Parameter,ncol=2)
+# ggs_autocorrelation(gg_mt, greek=T) +
+#   theme_bw()
+# 
+# effectiveSize(model1a_results[[1]])[effectiveSize(model1a_results[[1]])<10000]
+# sum(effectiveSize(model1a_results[[1]])<10000)
+# gelman.diag(model1a_results)
+# gelman.plot(model1a_results)
+
+basic_results = read.csv('data/2_basic_model_10k_chain1.csv')
+PL_results = read.csv('data/2_PL_model_10k_chain1.csv')
+```
+
+## Basic Model
+```{r}
+posterior_c = basic_results[10001,]
+posterior_betas = basic_results[1:10000,]
+names(posterior_betas) = c("mean","sd","naive.se","TS.se",
+                           "quant_95_L","quant_25","median",
+                           "quant_75","quant_95_U")
+
+labeled_betas = bind_cols(posterior_betas,data)
+
+refs_in_extract = match_to_refs(labeled_betas)$all %>%
+                    group_by(comparison,ref_grp) %>%
+                    tally(name="ref_records")
+labels_in_extract = match_to_refs(labeled_betas)$div %>%
+                    group_by(ref_label) %>%
+                    tally(name="ref_records")
+```
+
+```{r}
+bXmu = labeled_betas %>%
+          pivot_longer(c(obs.mu,E.mu),
+                       names_to="cohort",
+                       values_to="mutability")
+  
+ggplot(bXmu, aes(x=log(mutability),y=mean, color=cohort)) +
+  geom_point() +
+  xlab("log(Mutability)") + ylab(expression(beta*" coefficients"))+
+  scale_color_discrete(name = "Population", labels = c("Non-cancerous", "Cancerous")) +
+  theme(legend.position="top")
+ggsave('plots/Report_bayes_full_model_betas.pdf')
+
+
+
+top_betas = match_to_refs(labeled_betas %>% filter(mean>.6) %>% select(Codon_Id))$all %>%
+                    group_by(comparison,ref_grp) %>%
+                    tally()
+ex_ref_perc_overlap(top_betas)
+
+```
+```{r}
+high_betas = labeled_betas %>% filter(mean>.50)
+
+ct_of_refs = match_to_refs(labeled_betas)$all %>% group_by(comparison,ref_grp) %>% tally()
+ex_ref_perc_overlap(ct_of_refs)
+```
+
+```{r}
+ggplot(match_to_refs(labeled_betas)$all, aes(x=comparison,y=mean,color=comparison)) +
+  geom_boxplot(show.legend=F) +
+  facet_grid(~ref_grp,
+             labeller = labeller(ref_grp = ref_labels),
+             scale="free",
+             space = "free_x") +
+  scale_x_discrete(labels=c("cBio_TP" = "Chang True Positives", 
+                            "Chang_TP" = "Chang Predictions",
+                            "Brown_TP" = 'Brown "Driver"',
+                            "Brown_FP" = 'Brown "Passenger"',
+                            "Mutagene_TP" = 'Li "Non-netural"',
+                            "Mutagene_FP" = 'Li "Netural"',
+                            "UNK" = "No mentions"
+                            )) +
+  theme(axis.text.x = element_text(angle=45,hjust=1),
+        axis.title.x = element_blank(),
+        legend.position="bottom"
+        ) +
+  scale_y_log10()
+
+beta_int = match_to_refs(labeled_betas)$all %>%
+            mutate()
+```
+## Discriminatory power
+```{r}
+filter_coeff= function(crit_val) {
+  filtered_data = labeled_betas %>% filter(mean < exp(crit_val))
+  if (!is.null(nrow(match_to_refs(filtered_data)$div))) {
+    record_overlap = match_to_refs(filtered_data)$div %>%
+                          mutate(ref_label = as.factor(ref_label)) %>%
+                          group_by(ref_label) %>% tally()
+    record_overlap_perc = ex_ref_perc_overlap(record_overlap) %>%
+                          replace(is.na(.), 0)
+  } else {return(data.frame())}
+
+  return(record_overlap_perc)
+}
+
+coeff = seq(-10,0,by=.01) 
+
+coeff_table = data.frame(neg_rate=numeric(length(coeff)), pos_rate=numeric(length(coeff)))
+for (i in 1:length(coeff)){
+  if (i %% 50 == 0){
+    print(coeff[i])
+  }
+    results = filter_coeff(coeff[i])
+    if (nrow(results)<1){
+      next
+    }
+    coeff_table[i,] = results$perc_overlap
+}
+
+coeff_results = bind_cols(coeff_table,list(coeff=coeff))
+# write.csv(coeff_results,'data/divergence_Bayes_coeff_data.csv')
+coeff_results = read.csv('data/divergence_Bayes_coeff_data.csv')
+coeff_divergence = coeff_results %>% mutate(rate_diff = abs(pos_rate-neg_rate)) %>% arrange(desc(rate_diff)) %>% top_n(1)
+
+coeff_roc =  coeff_results%>%
+          pivot_longer(c(pos_rate,neg_rate),
+                          names_to = "label",
+                          values_to = "rate"
+                          ) %>%
+          mutate(label = factor(label,levels=c("pos_rate","neg_rate")))
+
+ggplot(coeff_roc, aes(x=coeff,y=rate,color=label)) +
+  geom_line() +
+  geom_vline(xintercept = coeff_divergence$coeff, linetype="dashed")+
+  scale_color_discrete(name = "",
+                      labels = c("Potential Positives","Potential Negatives")) +
+  theme(legend.position="top") + xlab("log(coeff)") +
+  coord_cartesian(xlim = c(-8,0), ylim=c(0,1)) +
+  annotate("text", x = coeff_divergence$coeff+1.2, y = .45, 
+           label = paste0("log(coeff) = ", coeff_divergence$coeff)) +
+  annotate("text", x = coeff_divergence$coeff+1, y = .4, 
+           label = paste0("separation = ", round(coeff_divergence$rate_diff,3)))
+
+ggsave('plots/Report_Div_Bayes_coeff.pdf')
+```
+
+
+## Model with Protein Length
+```{r}
+PL_posterior_c = PL_results[10001,]
+PL_posterior_betas = PL_results[1:10000,]
+names(PL_posterior_betas) = c("mean","sd","naive.se","TS.se",
+                           "quant_95_L","quant_25","median",
+                           "quant_75","quant_95_U")
+
+PL_data = bind_cols(posterior_betas,data)
+
+PL_posterior_c
+posterior_c
+```
+```{r}
+PL_bXmu = PL_data %>%
+          pivot_longer(c(obs.mu,E.mu),
+                       names_to="cohort",
+                       values_to="mutability")
+  
+ggplot(PL_bXmu, aes(x=mutability,y=mean, color=cohort)) +
+  geom_point() +
+  scale_x_log10() +
+  xlab("log(Mutability)")
+
+ggplot(PL_data, aes(x=Protein_Length,y=mean)) +
+  geom_point() +
+  geom_errorbar(aes(ymin=quant_95_L,
+                    ymax=quant_95_U), width=.2,
+                 position=position_dodge(0.05)) 
+
+```

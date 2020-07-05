@@ -12,19 +12,14 @@ library(purrr)
 library(ggplot2)
 library(pwr)
 
-setwd('/Users/elenashaw/Documents/UoE/Dissertation/CancerGenom/code/myCode/')
-data = read.csv('data/2_model_ready_data.csv')
-data_pvals = read.csv('data/2_binom_test_data.csv')
-val_data = read.csv('data/2_validation_ready_data.csv')
-htest_results = read.csv('data/2_qval_CI_test_results.csv')
-val_htest = read.csv('data/2_qval_validation_results.csv')
-# all_qvals = read.csv('data/2_adjusted_qval_comparison.csv')
-bayes_bin_results = read.csv('data/2_Bayesian_mcmc_scores.csv')
+data = read.csv('data/model_ready_data.csv')
+data_pvals = read.csv('data/binom_test_data.csv')
+htest_results = read.csv('data/qval_CI_test_results.csv')
+val_data = read.csv('data/validation_ready_data.csv')
+val_htest = read.csv('data/val_qval_CI_results.csv')
+bayes_bin_results = read.csv('data/Bayesian_mcmc_scores.csv')
 
 total_patients = 59815
-
-# val_htest %>% filter(BF_q_reject==T) %>% nrow()
-# val_htest %>% filter(BY_q_reject==T) %>% nrow()
 ```
 
 # Refs
