@@ -101,7 +101,8 @@ ggsave("plots/Report_effect_size.pdf",width = 15, height = 7, units = "cm")
 ```{r}
 pval_df = data_pvals %>% select(c(Codon_Id,obs.mu,E.mu,exact_bin))
 
-ref_mu = compare_dfs(pval_df)$all %>%
+ref_mu = compare_refs(pval_df,'data/all_TPs.csv','data/potential_FP.csv',
+                          'data/full_cosmic.csv')$all %>%
               pivot_longer(c(obs.mu,E.mu),
                            names_to = "measure",
                            values_to = "mu") %>%
@@ -156,7 +157,8 @@ all_discoveries = bind_rows(BF_q_discoveries,BY_q_discoveries,BF_CI_discoveries,
 
 all_discoveries %>% group_by(disc_method) %>% tally()
 
-grp_results = compare_dfs(all_discoveries)$all %>%
+grp_results = compare_refs(all_discoveries,'data/all_TPs.csv','data/potential_FP.csv',
+                          'data/full_cosmic.csv')$all %>%
                 mutate(ref_grp = as.factor(ref_grp)) %>%
                 group_by(disc_method,ref_grp,comparison) %>% tally()
 
@@ -189,7 +191,8 @@ ggplot(comp_df, aes(x=comparison,y=perc_overlap,fill=disc_method)) +
 ```
 ### Compare pattern: HTesting
 ```{r}
-ref_sig_val = compare_dfs(htest_results)$all %>%
+ref_sig_val = compare_refs(htest_results,'data/all_TPs.csv','data/potential_FP.csv',
+                          'data/full_cosmic.csv')$all %>%
               mutate(lg_BF_CI = log(BF_distance),
                      lg_BY_CI = log(BY_distance)
                      ) %>%
@@ -311,7 +314,8 @@ pwr_df = htest_results %>%
 
 # write.csv(pwr_df, 'data/2_power_calcs.csv',row.names = F)
 
-ref_pwr = compare_dfs(pwr_df)$all %>%
+ref_pwr = compare_refs(pwr_df,'data/all_TPs.csv','data/potential_FP.csv',
+                          'data/full_cosmic.csv')$all  %>%
             mutate(ref_grp = factor(ref_grp,levels=c("FP","TP","TN")))
 
 comparison_labels = c("cBio_TP" = "Chang True Positives", 
@@ -351,10 +355,12 @@ ggsave("plots/Report_ref_power.pdf")
 high_power_BF = pwr_df %>% filter(beta < max(b_divergence$b), BF_qval<exp(-60))
 high_power_BY = pwr_df %>% filter(beta < max(b_divergence$b), BY_qval<exp(-60))
        
-high_power_BF_overlap = compare_dfs(high_power_BF)$all %>%
+high_power_BF_overlap = compare_refs(high_power_BF,'data/all_TPs.csv','data/potential_FP.csv',
+                          'data/full_cosmic.csv')$all %>%
                       group_by(ref_grp,comparison) %>%
                       tally()
-high_power_BY_overlap = compare_dfs(high_power_BY)$all %>%
+high_power_BY_overlap = compare_refs(high_power_BY,'data/all_TPs.csv','data/potential_FP.csv',
+                          'data/full_cosmic.csv')$all %>%
                       group_by(ref_grp,comparison) %>%
                       tally()
 
@@ -422,8 +428,10 @@ ggplot(aXb_ref, aes(x=log(alpha), y=log(beta), color=metric)) +
 ```{r}
 filter_beta= function(crit_b) {
   filtered_data = pwr_df %>% filter(beta < exp(crit_b))
-  if (!is.null(nrow(compare_dfs(filtered_data)$div))) {
-    record_overlap = compare_dfs(filtered_data)$div %>%
+  if (!is.null(nrow(compare_refs(filtered_data,'data/all_TPs.csv','data/potential_FP.csv',
+                          'data/full_cosmic.csv')$div))) {
+    record_overlap = compare_refs(filtered_data,'data/all_TPs.csv','data/potential_FP.csv',
+                          'data/full_cosmic.csv')$div %>%
                           mutate(ref_label = as.factor(ref_label)) %>%
                           group_by(ref_label) %>% tally()
     record_overlap_perc = label_perc_overlap(record_overlap) %>%
@@ -480,7 +488,7 @@ ggsave('plots/Report_div_b.pdf')
 ## Check results with validation set
 note: even at .01 q-val threshold, we only get 87 results. If we set beta at .2, down to 37 results. @ max divergence threshold, 0 records.
 ```{r}
-# val_htest = read.csv('data/2_qval_validation_results.csv')
+# val_htest = read.csv('data/qval_validation_results.csv')
 # 
 # val_sig_results = val_htest #%>%
 #                     # filter(BF_qval<a_divergence$a) #, BY_qval<a_divergence$a)
@@ -532,7 +540,8 @@ bayes_discoveries = bayes_bin_results %>%
                       mutate(bayes_p = exp(log_score)) %>%
                       filter(bayes_p < .01)
        
-bayes_disc_overlap = compare_dfs(bayes_discoveries)$all %>%
+bayes_disc_overlap = compare_refs(bayes_discoveries,'data/all_TPs.csv','data/potential_FP.csv',
+                          'data/full_cosmic.csv')$all %>%
                       group_by(comparison,ref_grp) %>%
                       tally()
 
@@ -593,7 +602,8 @@ ggsave('plots/Report_bayes_test_ref.pdf',height=12,units = "cm")
 ```
 
 ```{r}
-bayes_pwr_df = compare_dfs(bayes_discoveries)$all %>%
+bayes_pwr_df = compare_refs(bayes_discoveries,'data/all_TPs.csv','data/potential_FP.csv',
+                          'data/full_cosmic.csv')$all %>%
                   mutate(effect_size_h = 2*(asin(sqrt(obs.mu)) - asin(sqrt(E.mu))),
                          power = std_power(effect_size_h),
                          beta = 1-power,
@@ -642,7 +652,8 @@ filter_rate = function(crit_risk,crit_ES) {
 ES_df = data_pvals %>%
           mutate(effect_size_h = 2*(asin(sqrt(obs.mu)) - asin(sqrt(E.mu))))
 
-ref_ES = compare_dfs(ES_df)$all %>%
+ref_ES = compare_refs(ES_df,'data/all_TPs.csv','data/potential_FP.csv',
+                          'data/full_cosmic.csv')$all %>%
             mutate(ref_grp = factor(ref_grp,levels=c("FP","TP","TN"))) #%>%
             # pivot_longer(c(BYq_cohen_beta,BFCI_cohen_beta),
             #              names_to = "sig_method",
@@ -681,8 +692,10 @@ sig_ES_perc = ref_grp_perc_overlap(sig_ES_overlap)
 ```{r}
 filter_es1= function(crit_es1) {
   filtered_data = ES_df %>% filter(effect_size_h < exp(crit_es1))
-  if (!is.null(nrow(compare_dfs(filtered_data)$div))) {
-    record_overlap = compare_dfs(filtered_data)$div %>%
+  if (!is.null(nrow(compare_refs(filtered_data,'data/all_TPs.csv','data/potential_FP.csv',
+                          'data/full_cosmic.csv')$div))) {
+    record_overlap = compare_refs(filtered_data,'data/all_TPs.csv','data/potential_FP.csv',
+                          'data/full_cosmic.csv')$div %>%
                           mutate(ref_label = as.factor(ref_label)) %>%
                           group_by(ref_label) %>% tally()
     record_overlap_perc = label_perc_overlap(record_overlap) %>%
@@ -738,7 +751,9 @@ ggsave("plots/Report_div_es1.pdf") #,width = 15, height = 7, units = "cm")
 val_high_ES = val_risk_ES_data %>%
                     filter(effect_size_h > exp(es1_divergence$es))
 
-val_high_ES_results = compare_vals(val_high_ES)$all %>%
+val_high_ES_results = compare_refs(val_high_ES,'data/validation_all_TPs.csv',
+                                   'data/validation_FP.csv',
+                                   'data/val_full_cosmic.csv')$all %>%
                 mutate(ref_grp = factor(ref_grp,
                                          levels=c("FP","TP","TN"))) %>%
                 group_by(ref_grp,comparison) %>% tally()
@@ -824,7 +839,8 @@ risks_df = pval_df %>%
                    risk_diff = (obs.mu - E.mu)/total_patients
                    )
 
-all_riskXq = compare_dfs(risks_df)$all %>%
+all_riskXq = compare_refs(risks_df,'data/all_TPs.csv','data/potential_FP.csv',
+                          'data/full_cosmic.csv')$all %>%
               pivot_longer(c(risk_ratio,odds_ratio,risk_diff),
                            names_to = "measure",
                            values_to = "risk") %>%
@@ -861,7 +877,8 @@ ggsave("plots/Report_ref_risk_ratio.pdf")
 ```{r}
 sig_risk = all_discoveries %>% mutate(risk_ratio = obs.mu/E.mu) %>% filter(risk_ratio > exp(3)) %>% select(Codon_Id) %>% unique()
 
-sig_risk_overlap = compare_dfs(sig_risk)$all %>%
+sig_risk_overlap = compare_refs(sig_risk,'data/all_TPs.csv','data/potential_FP.csv',
+                          'data/full_cosmic.csv')$all %>%
                       group_by(comparison,ref_grp) %>%
                       tally()
 
@@ -870,7 +887,8 @@ sig_risk_perc = ref_grp_perc_overlap(sig_risk_overlap)
 all_risk = ref_sig_val %>%
             mutate(risk_ratio = obs.mu/E.mu)
 
-all_risk_labeled = compare_dfs(all_risk)$all %>%
+all_risk_labeled = compare_refs(all_risk,'data/all_TPs.csv','data/potential_FP.csv',
+                          'data/full_cosmic.csv')$all %>%
                       group_by(comparison,ref_grp) %>%
                       tally()
 
@@ -896,8 +914,10 @@ ggplot(all_risk, aes(x=comparison,y=log(risk_ratio),color=comparison)) +
 ```{r}
 filter_rr1= function(crit_rr1) {
   filtered_data = risks_df %>% filter(risk_ratio < exp(crit_rr1))
-  if (!is.null(nrow(compare_dfs(filtered_data)$div))) {
-    record_overlap = compare_dfs(filtered_data)$div %>%
+  if (!is.null(nrow(compare_refs(filtered_data,'data/all_TPs.csv','data/potential_FP.csv',
+                          'data/full_cosmic.csv')$div))) {
+    record_overlap = compare_refs(filtered_data,'data/all_TPs.csv','data/potential_FP.csv',
+                          'data/full_cosmic.csv')$div %>%
                           mutate(ref_label = as.factor(ref_label)) %>%
                           group_by(ref_label) %>% tally()
     record_overlap_perc = label_perc_overlap(record_overlap) %>%
@@ -956,7 +976,9 @@ val_ref_perc_overlap = function(result_df) return(full_join(result_df,val_ref_ct
 val_high_risk = val_risk_ES_data %>%
                     filter(risk_ratio > exp(rr1_divergence$rr))
 
-val_high_risk_results = compare_vals(val_high_risk)$all %>%
+val_high_risk_results = compare_refs(val_high_risk,'data/validation_all_TPs.csv',
+                                   'data/validation_FP.csv',
+                                   'data/val_full_cosmic.csv')$all %>%
                 mutate(ref_grp = as.factor(ref_grp)) %>%
                 group_by(ref_grp,comparison) %>% tally()
 
@@ -996,19 +1018,22 @@ risk_ES_data = pwr_df %>% mutate(risk_ratio = obs.mu/E.mu)
 riskXes_df = risk_ES_data %>% filter(risk_ratio > exp(rr1_divergence$rr), effect_size_h > exp(es1_divergence$es)) #inner_join(sig_risk,high_ES,by='Codon_Id') %>% select(Codon_Id) %>% unique()
 
 high_risk_df = risk_ES_data %>% filter(risk_ratio > exp(rr1_divergence$rr))
-high_risk_labeled = compare_dfs(high_risk_df)$all %>%
+high_risk_labeled = compare_refs(high_risk_df,'data/all_TPs.csv','data/potential_FP.csv',
+                          'data/full_cosmic.csv')$all %>%
                       group_by(comparison,ref_grp) %>%
                       tally()
 sig_risk_perc = ref_grp_perc_overlap(high_risk_labeled) %>%
                 mutate(disc_method = "Risk")
 high_ES_df = risk_ES_data %>% filter(effect_size_h > exp(es1_divergence$es))
-high_ES_labeled = compare_dfs(high_ES_df)$all %>%
+high_ES_labeled = compare_refs(high_ES_df,'data/all_TPs.csv','data/potential_FP.csv',
+                          'data/full_cosmic.csv')$all %>%
                       group_by(comparison,ref_grp) %>%
                       tally()
 sig_ES_perc = ref_grp_perc_overlap(high_ES_labeled) %>%
                 mutate(disc_method = "ES")
 
-riskXes_labeled = compare_dfs(riskXes_df)$all %>%
+riskXes_labeled = compare_refs(riskXes_df,'data/all_TPs.csv','data/potential_FP.csv',
+                          'data/full_cosmic.csv')$all %>%
                       group_by(comparison,ref_grp) %>%
                       tally()
 
@@ -1019,10 +1044,12 @@ riskXes_labeled = compare_dfs(riskXes_df)$all %>%
 BFq_thres = all_discoveries %>% filter(BF_qval < exp(-1))
 BYq_thres = all_discoveries %>% filter(BY_qval < exp(-7.3))
 
-BF_results = compare_dfs(BFq_thres)$all %>%
+BF_results = compare_refs(BFq_thres,'data/all_TPs.csv','data/potential_FP.csv',
+                          'data/full_cosmic.csv')$all %>%
                 mutate(ref_grp = as.factor(ref_grp)) %>%
                 group_by(disc_method,ref_grp,comparison) %>% tally()
-BY_results = compare_dfs(BYq_thres)$all %>%
+BY_results = compare_refs(BFq_thres,'data/all_TPs.csv','data/potential_FP.csv',
+                          'data/full_cosmic.csv')$all %>%
                 mutate(ref_grp = as.factor(ref_grp)) %>%
                 group_by(disc_method,ref_grp,comparison) %>% tally()
 
@@ -1071,7 +1098,9 @@ risks_ES_data = pval_df %>%
 val_rXES_df = val_risk_ES_data %>%
                     filter(risk_ratio > exp(3), effect_size_h > exp(-4.5))
 
-val_rXES_results = compare_vals(val_rXES_df)$all %>%
+val_rXES_results = compare_refs(val_rXES_df,'data/validation_all_TPs.csv',
+                                   'data/validation_FP.csv',
+                                   'data/val_full_cosmic.csv')$all %>%
                         mutate(ref_grp = as.factor(ref_grp)) %>%
                         group_by(ref_grp,comparison) %>% tally()
 
