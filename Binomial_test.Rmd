@@ -5,13 +5,13 @@ date: "12/06/2020"
 output: pdf_document
 ---
 ```{r setup, include=FALSE}
-library(dplyr)
 library(tidyr)
 library(ggplot2)
 library(binom)
 library(BayesianFirstAid)
 library(ggmcmc)
 require(rjags)
+library(dplyr)
 
 data = read.csv('data/model_ready_data.csv')
 # val_data = read.csv('data/validation_ready_data.csv')
@@ -19,28 +19,16 @@ data = read.csv('data/model_ready_data.csv')
 total_patients = 59815
 unique_CodonIds = nrow(data)
 ```
-## Read in TP comparisons 
-```{r}
-all_TPs = read.csv('data/all_TPs.csv')
-
-our_chang_TP = all_TPs %>% filter(comparison=='chang_TP')
-our_chang_pred = all_TPs %>% filter(comparison=='chang_pred')
-our_brown_TP = all_TPs %>% filter(comparison=='brown_TP')
-our_li_TP = all_TPs %>% filter(comparison=='li_TP')
-
-# 55,203 TPs
-# combined_TPs  = all_TPs %>% select(Codon_Id) %>% unique()
-```
 
 # Binom test
 ```{r}
 binom_test_fn = function(obs,mu) return (pbinom(obs,size=total_patients,prob=mu,lower.tail=FALSE,log.p=F)) # function used by Chang algorithm
 
-data_pvals = read.csv('data/2_binom_test_data.csv')
+# data_pvals = read.csv('data/binom_test_data.csv')
 data_pvals = data %>%
                 rowwise() %>%
-                mutate(exact_bin = binom_test_fn(Observations, E.mu),
-                       )
+                mutate(exact_bin = binom_test_fn(Observations, E.mu))
+                       
 # val_pvals = val_data %>%
 #                 rowwise() %>%
 #                 mutate(exact_bin = binom_test_fn(Observations, E.mu))
@@ -58,52 +46,39 @@ use_p_adjust_method = function(pval_df, method_str) {
   return(pval_df)
 }
 ```
-## Compare: Known TP's & TP's found using Chang's algorithm
-```{r}
-compare_results = function(ref_table, qval_table, return_table=F) {
-  overlap_df = semi_join(qval_table,ref_table, by="Codon_Id")
-  overlap_recs = overlap_df %>% select(Codon_Id) %>% distinct() %>% nrow()
-  cat('overlapping records:',overlap_recs," / ",nrow(ref_table),"\n")
-  if ('TP' %in% names(overlap_df)) {
-    TP_recs = sum(overlap_df$TP)
-    cat('overlapping TP:',TP_recs," / ",nrow(ref_table),"\n")
-  }
-  if (return_table){
-    return(overlap_df)
-  }
-}
-```
 
 ## Add comparison with qval method
 ```{r}
-qval_BF = use_p_adjust_method(data_pvals,'bonferr') #3680 rows
-qval_BY = use_p_adjust_method(data_pvals,'BY') #6352 rows
+qval_BF = use_p_adjust_method(data_pvals,'bonferr') 
+qval_BY = use_p_adjust_method(data_pvals,'BY')
 
-all_qvals = bind_rows(qval_BF,qval_BY)
+all_qvals = bind_rows(qval_BF,qval_BY) %>% 
+              pivot_wider(names_from = q_method, values_from = exactqval) %>%
+              rename(BF_qval = bonferr,
+                     BY_qval = BY)
 ```
 
 ## Confidence intervals
 ```{r}
 BY_sig_exactbin = 3.913217e-05
 
+data_pvals$rank = dense_rank(data_pvals$exact_bin)
 BY_critial = data_pvals %>%
-              mutate(rank = dense_rank(exact_bin),
-                     alpha_prime = (rank/nrow(data_pvals)*(.01/sum(1/1:rank))),
+              mutate(alpha_prime = (rank/nrow(data_pvals)*(.01/sum(1/1:rank))),
                      crit_val = rank*.01/nrow(data_pvals),
                      is_less = exact_bin < alpha_prime) %>%
-              filter(rank == 7268)
+              filter(rank == 7434)
 
-BH_sig_exactbin = BH_critial$exact_bin
 BY_sig_exactbin = BY_critial$exact_bin
 
 wilson_BF_CI = binom.confint(data_pvals$E.mu, total_patients,
-                            conf.level=1-2*(.01/(nrow(data))), methods=c("wilson")) %>%
+                            conf.level=1-(2*(.01/(nrow(data)))), methods=c("wilson")) %>%
                 select(mean, lower, upper) %>%
                 transmute(BF_CI_mean = mean,
                           BF_CI_L = lower,
                            BF_CI_U = upper)
 wilson_BY_CI = binom.confint(data_pvals$E.mu, total_patients,
-                            conf.level=1-2*BY_sig_exactbin, methods=c("wilson")) %>%
+                            conf.level=1-(2*BY_sig_exactbin), methods=c("wilson")) %>%
                 select(mean, lower, upper) %>%
                 transmute(BY_CI_mean = mean,
                           BY_CI_L = lower,
@@ -116,15 +91,14 @@ wilson_CI = binom.confint(data_pvals$E.mu, total_patients,
                           CI_L = lower,
                            CI_U = upper)
 
-data_p_CI = bind_cols(data_pvals,wilson_BF_CI,wilson_BY_CI) #,wilson_CI) 
+data_p_CI = bind_cols(all_qvals,wilson_BF_CI,wilson_BY_CI,wilson_CI) 
 
 htest_results = data_p_CI %>%
-                  mutate(BY_qval =  p.adjust(exact_bin, method='BY'),
-                          BF_qval = p.adjust(exact_bin, method='bonferr'),
+                  mutate(
                           BF_q_reject = BF_qval<.01,
                           BY_q_reject = BY_qval<.01,
-                          # p_reject = exact_bin<.01,
-                          # CI_reject = (obs.mu > CI_U),
+                          p_reject = exact_bin<.01,
+                          CI_reject = (obs.mu > CI_U),
                           BF_CI_reject = (obs.mu > BF_CI_U),
                           BY_CI_reject = (obs.mu > BY_CI_U),
                           BF_distance = obs.mu - BF_CI_U,
@@ -191,5 +165,5 @@ for (i in 1:unique_CodonIds) {
 }
 
 post_scores = cbind(data,scores)
-write.csv(post_scores,file='data/Bayesian_mcmc_scores.csv',row.names = F)
+# write.csv(post_scores,file='data/Bayesian_mcmc_scores.csv',row.names = F)
 ```
