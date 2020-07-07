@@ -16,7 +16,7 @@ data = read.csv('data/model_ready_data.csv')
 data_pvals = read.csv('data/binom_test_data.csv')
 val_data = read.csv('data/validation_ready_data.csv')
 htest_results = read.csv('data/qval_CI_test_results.csv')
-val_htest = read.csv('data/qval_validation_results.csv')
+val_htest = read.csv('data/val_qval_CI_results.csv')
 bayes_bin_results = read.csv('data/Bayesian_mcmc_scores.csv')
 
 total_patients = 59815
@@ -24,18 +24,20 @@ total_patients = 59815
 
 # Refs
 ```{r}
-ref_grp_ct = ref_overlap_ct(data,'data/all_TPs.csv','data/potential_FP.csv',
-                            'data/full_cosmic.csv')
-label_ct = ref_overlap_ct(data,'data/all_TPs.csv','data/potential_FP.csv',
-                          'data/full_cosmic.csv',label=T)
-```
+data_TPs = read.csv('data/all_TPs.csv')
+data_FPs = read.csv('data/potential_FP.csv')
+data_COSMIC = read.csv('data/full_cosmic.csv')
+ref_grp_ct = ref_overlap_ct(data, data_TPs, data_FPs, data_COSMIC)
+label_ct = ref_overlap_ct(data,data_TPs, data_FPs, data_COSMIC,label=T)
 
-## Validation data
-```{r}
-val_ref_ct = ref_overlap_ct(data,'data/validation_TPs.csv','data/validation_FP.csv',
-                            'data/val_full_cosmic.csv')
-val_label_ct = ref_overlap_ct(data,'data/validation_TPs.csv','data/validation_FP.csv',
-                          'data/val_full_cosmic.csv',label=T)
+val_TPs = read.csv('data/all_TPs.csv')
+val_FPs = read.csv('data/potential_FP.csv')
+val_COSMIC = read.csv('data/full_cosmic.csv')
+val_ref_ct = ref_overlap_ct(val_data, val_TPs, val_FPs, val_COSMIC)
+val_label_ct = ref_overlap_ct(val_data, val_TPs, val_FPs, val_COSMIC, label=T)
+
+ref_labels = c("False Positive","True Positive","True Negative")
+names(ref_labels) = c("FP","TP","TN")
 ```
 
 ## ref comparison fns
@@ -46,8 +48,27 @@ label_perc_overlap = function(result_df) return(full_join(result_df,label_ct, by
 
 val_ref_perc_overlap = function(result_df) return(full_join(result_df,val_ref_ct, by=c('ref_grp','comparison')) %>% mutate(perc_overlap = n/ref_records))
 
-ref_labels = c("False Positive","True Positive","True Negative")
-names(ref_labels) = c("FP","TP","TN")
+find_divergence = function(data, x, column_name) {
+  results_table = data.frame(neg_rate=numeric(length(x)), pos_rate=numeric(length(x)))
+  
+  for (i in 1:length(x)){
+    if (i %% 50 == 0){
+      print(x[i])
+    }
+    
+    filtered_data = data %>% filter(sym(column_name) < exp(x[i]))
+    if (!is.null(nrow(compare_refs(filtered_data)$div))) {
+      record_overlap = compare_refs(filtered_data)$div %>%
+                        mutate(ref_label = as.factor(ref_label)) %>%
+                        group_by(ref_label) %>% tally()
+      record_overlap_perc = label_perc_overlap(record_overlap) %>%
+                              replace(is.na(.), 0)
+      results_table[i,] = record_overlap_perc$perc_overlap
+    }
+  }
+  
+  return(results_table)
+}
 ```
 ## GENIE patterns
 ```{r}
@@ -94,15 +115,14 @@ ggplot(eg_df) +
     theme(axis.title.y = element_blank()) +
     xlab("Number of Mutations") +
     scale_fill_discrete(name = "Population", labels = c("Non-cancerous", "Cancerous"))
-ggsave("plots/Report_effect_size.pdf",width = 15, height = 7, units = "cm")
+# ggsave("plots/Report_effect_size.pdf",width = 15, height = 7, units = "cm")
 ```
 
 ## Ref patterns: mutability
 ```{r}
 pval_df = data_pvals %>% select(c(Codon_Id,obs.mu,E.mu,exact_bin))
 
-ref_mu = compare_refs(pval_df,'data/all_TPs.csv','data/potential_FP.csv',
-                          'data/full_cosmic.csv')$all %>%
+ref_mu = compare_refs(pval_df, data_TPs, data_FPs, data_COSMIC)$all %>%
               pivot_longer(c(obs.mu,E.mu),
                            names_to = "measure",
                            values_to = "mu") %>%
@@ -137,7 +157,7 @@ ggplot(ref_mu,
         ) +
   ylab("log(Mutability)") +
   scale_y_log10()
-ggsave("plots/Report_ref_mu.pdf")
+# ggsave("plots/Report_ref_mu.pdf")
 ```
 
 ## Ref patterns: (Null) Hypothesis testing
@@ -157,8 +177,7 @@ all_discoveries = bind_rows(BF_q_discoveries,BY_q_discoveries,BF_CI_discoveries,
 
 all_discoveries %>% group_by(disc_method) %>% tally()
 
-grp_results = compare_refs(all_discoveries,'data/all_TPs.csv','data/potential_FP.csv',
-                          'data/full_cosmic.csv')$all %>%
+grp_results = compare_refs(all_discoveries,data_TPs, data_FPs, data_COSMIC)$all %>%
                 mutate(ref_grp = as.factor(ref_grp)) %>%
                 group_by(disc_method,ref_grp,comparison) %>% tally()
 
@@ -191,8 +210,7 @@ ggplot(comp_df, aes(x=comparison,y=perc_overlap,fill=disc_method)) +
 ```
 ### Compare pattern: HTesting
 ```{r}
-ref_sig_val = compare_refs(htest_results,'data/all_TPs.csv','data/potential_FP.csv',
-                          'data/full_cosmic.csv')$all %>%
+ref_sig_val = compare_refs(htest_results,data_TPs, data_FPs, data_COSMIC)$all %>%
               mutate(lg_BF_CI = log(BF_distance),
                      lg_BY_CI = log(BY_distance)
                      ) %>%
@@ -233,36 +251,14 @@ ggplot(ref_sig_val) +
                                  "B-Y Confidence Interval", 
                                  "Bonferroni q-value","B-Y q-value"))
    
-ggsave("plots/Report_ref_qCI.pdf", height = 15, units="cm")
+# ggsave("plots/Report_ref_qCI.pdf", height = 15, units="cm")
 ```
 ## Discriminatory power: alpha
 ```{r}
-filter_alpha= function(crit_a) {
-  filtered_data = htest_results %>% filter(BF_qval < exp(crit_a))
-  if (!is.null(nrow(compare_dfs(filtered_data)$div))) {
-    record_overlap = compare_dfs(filtered_data)$div %>%
-                          mutate(ref_label = as.factor(ref_label)) %>%
-                          group_by(ref_label) %>% tally()
-    record_overlap_perc = label_perc_overlap(record_overlap) %>%
-                          replace(is.na(.), 0)
-  } else {return(data.frame())}
+alpha = seq(-800,0,by=.1)
 
-  return(record_overlap_perc)
-}
-
-alpha = seq(-800,0,by=.1) #c(seq(-800,0,by=.1),seq(.01,1,by=.01))
-
-alpha_table = data.frame(neg_rate=numeric(length(alpha)), pos_rate=numeric(length(alpha)))
-for (i in 1:length(alpha)){
-  if (i %% 50 == 0){
-    print(alpha[i])
-  }
-    results = filter_alpha(alpha[i])
-    if (nrow(results)<1){
-      next
-    }
-    alpha_table[i,] = results$perc_overlap
-}
+alpha_table = find_divergence(htest_results, alpha, 'BF_qval')
+alpha_table = find_divergence(htest_results, alpha, 'BY_qval')
 
 alpha_results = bind_cols(alpha_table,list(a=alpha))
 # write.csv(alpha_results,'data/divergence_alpha_BF.csv',row.names=F)
@@ -295,7 +291,7 @@ ggplot(alpha_roc, aes(x=a,y=rate,color=label)) +
   # xlab("log(Bonferroni adjusted p-value)") + ylab("Proportion")
 
 # ggsave('plots/Report_div_a_BF.pdf', height=11,units="cm")
-ggsave('plots/Report_div_a_BY.pdf', height=11,units="cm")
+# ggsave('plots/Report_div_a_BY.pdf', height=11,units="cm")
 
 ```
 
@@ -312,10 +308,7 @@ pwr_df = htest_results %>%
                   beta = 1- power
           )
 
-# write.csv(pwr_df, 'data/2_power_calcs.csv',row.names = F)
-
-ref_pwr = compare_refs(pwr_df,'data/all_TPs.csv','data/potential_FP.csv',
-                          'data/full_cosmic.csv')$all  %>%
+ref_pwr = compare_refs(pwr_df, data_TPs, data_FPs, data_COSMIC)$all  %>%
             mutate(ref_grp = factor(ref_grp,levels=c("FP","TP","TN")))
 
 comparison_labels = c("cBio_TP" = "Chang True Positives", 
@@ -349,18 +342,51 @@ ggplot(ref_pwr, aes(x=comparison,y=log(beta),color=comparison)) +
         axis.title.x = element_blank(),
         ) +
   ylab("log(Type II error)")
-ggsave("plots/Report_ref_power.pdf")
+# ggsave("plots/Report_ref_power.pdf")
 ```
+## Discriminatory power: beta
 ```{r}
-high_power_BF = pwr_df %>% filter(beta < max(b_divergence$b), BF_qval<exp(-60))
-high_power_BY = pwr_df %>% filter(beta < max(b_divergence$b), BY_qval<exp(-60))
+beta = seq(-40,0,by=.01)
+beta_table = find_divergence(pwr_df, beta, 'beta')
+beta_results = bind_cols(beta_table,list(b=beta))
+
+# write.csv(alpha_results,'data/divergence_beta.csv',row.names=F)
+beta_results = read.csv('data/divergence_beta.csv')
+b_divergence = beta_results %>% 
+                  mutate(rate_diff = abs(pos_rate-neg_rate)) %>% 
+                  arrange(desc(rate_diff)) %>% 
+                  top_n(1)
+
+beta_roc =  beta_results%>%
+          pivot_longer(c(pos_rate,neg_rate),
+                          names_to = "label",
+                          values_to = "rate"
+                          ) %>%
+          mutate(label = factor(label,levels=c("pos_rate","neg_rate")))
+
+ggplot(beta_roc, aes(x=b,y=rate,color=label)) +
+  geom_line() +
+  geom_vline(xintercept = b_divergence$b, linetype="dashed")+
+  scale_color_discrete(name = "",
+                      labels = c("Potential Positives","Potential Negatives")) +
+  theme(legend.position="top") + xlab("log(Type II error)") +
+  ylab("Proportion") +
+  coord_cartesian(xlim = c(-40,0), ylim=c(0,1)) +
+  annotate("text", x = b_divergence$b-4.5, y = .45, 
+           label = paste0("log(error) = ", b_divergence$b)) +
+  annotate("text", x = b_divergence$b-4.5, y = .4, 
+           label = paste0("separation = ", round(b_divergence$rate_diff,3)))
+# ggsave('plots/Report_div_b.pdf')
+```
+
+```{r}
+high_power_BF = pwr_df %>% filter(beta < max(b_divergence$b), BF_qval<a_divergence$a)
+high_power_BY = pwr_df %>% filter(beta < max(b_divergence$b), BY_qval<a_divergence$a)
        
-high_power_BF_overlap = compare_refs(high_power_BF,'data/all_TPs.csv','data/potential_FP.csv',
-                          'data/full_cosmic.csv')$all %>%
+high_power_BF_overlap = compare_refs(high_power_BF,data_TPs, data_FPs, data_COSMIC)$all %>%
                       group_by(ref_grp,comparison) %>%
                       tally()
-high_power_BY_overlap = compare_refs(high_power_BY,'data/all_TPs.csv','data/potential_FP.csv',
-                          'data/full_cosmic.csv')$all %>%
+high_power_BY_overlap = compare_refs(high_power_BY,data_TPs, data_FPs, data_COSMIC)$all %>%
                       group_by(ref_grp,comparison) %>%
                       tally()
 
@@ -419,74 +445,14 @@ ggplot(aXb_ref, aes(x=log(alpha), y=log(beta), color=metric)) +
   xlab("log(Type I error)") + ylab("log(Type II error)") +
   theme(legend.position="top") +
   scale_color_discrete(name = "", 
-                      labels = c("Bonferroni adjusted p","B-Y adjusted p"))  +
+                      labels = c("Bonferroni adjusted p","B-Y adjusted p"))
 
 # ggsave("plots/Report_ref_aVb.pdf")
 ```
 
-## Discriminatory power: beta
-```{r}
-filter_beta= function(crit_b) {
-  filtered_data = pwr_df %>% filter(beta < exp(crit_b))
-  if (!is.null(nrow(compare_refs(filtered_data,'data/all_TPs.csv','data/potential_FP.csv',
-                          'data/full_cosmic.csv')$div))) {
-    record_overlap = compare_refs(filtered_data,'data/all_TPs.csv','data/potential_FP.csv',
-                          'data/full_cosmic.csv')$div %>%
-                          mutate(ref_label = as.factor(ref_label)) %>%
-                          group_by(ref_label) %>% tally()
-    record_overlap_perc = label_perc_overlap(record_overlap) %>%
-                          replace(is.na(.), 0)
-  } else {return(data.frame())}
-
-  return(record_overlap_perc)
-}
-
-beta = seq(-40,0,by=.01)
-
-beta_table = data.frame(neg_rate=numeric(length(beta)), pos_rate=numeric(length(beta)))
-for (i in 1:length(beta)){
-  if (i %% 50 == 0){
-    print(beta[i])
-  }
-    results = filter_beta(beta[i])
-    if (nrow(results)<1){
-      next
-    }
-    beta_table[i,] = results$perc_overlap
-}
-
-beta_results = bind_cols(beta_table,list(b=beta))
-# write.csv(alpha_results,'data/divergence_beta.csv',row.names=F)
-beta_results = read.csv('data/divergence_beta.csv')
-b_divergence = beta_results %>% 
-                  mutate(rate_diff = abs(pos_rate-neg_rate)) %>% 
-                  arrange(desc(rate_diff)) %>% 
-                  top_n(1)
-
-beta_roc =  beta_results%>%
-          pivot_longer(c(pos_rate,neg_rate),
-                          names_to = "label",
-                          values_to = "rate"
-                          ) %>%
-          mutate(label = factor(label,levels=c("pos_rate","neg_rate")))
-
-ggplot(beta_roc, aes(x=b,y=rate,color=label)) +
-  geom_line() +
-  geom_vline(xintercept = b_divergence$b, linetype="dashed")+
-  scale_color_discrete(name = "",
-                      labels = c("Potential Positives","Potential Negatives")) +
-  theme(legend.position="top") + xlab("log(Type II error)") +
-  ylab("Proportion") +
-  coord_cartesian(xlim = c(-40,0), ylim=c(0,1)) +
-  annotate("text", x = b_divergence$b-4.5, y = .45, 
-           label = paste0("log(error) = ", b_divergence$b)) +
-  annotate("text", x = b_divergence$b-4.5, y = .4, 
-           label = paste0("separation = ", round(b_divergence$rate_diff,3)))
-ggsave('plots/Report_div_b.pdf')
-```
 
 ## Check results with validation set
-note: even at .01 q-val threshold, we only get 87 results. If we set beta at .2, down to 37 results. @ max divergence threshold, 0 records.
+note: even at .01 q-val threshold, we only get 87 results. If we set beta at .2, down to 37 results. At max divergence threshold, 0 records.
 ```{r}
 # val_htest = read.csv('data/qval_validation_results.csv')
 # 
@@ -500,7 +466,7 @@ note: even at .01 q-val threshold, we only get 87 results. If we set beta at .2,
 #                   beta = 1- power
 #           ) %>% filter(beta < max(b_divergence$b))
 # 
-# val_ht_results = compare_vals(val_pwr)$val %>%
+# val_ht_results = compare_refs(val_pwr,val_TPs, val_FPs, val_COSMIC)$val %>%
 #                 mutate(ref_grp = as.factor(ref_grp)) %>%
 #                 group_by(ref_grp,comparison) %>% tally()
 # 
@@ -540,34 +506,12 @@ bayes_discoveries = bayes_bin_results %>%
                       mutate(bayes_p = exp(log_score)) %>%
                       filter(bayes_p < .01)
        
-bayes_disc_overlap = compare_refs(bayes_discoveries,'data/all_TPs.csv','data/potential_FP.csv',
-                          'data/full_cosmic.csv')$all %>%
+bayes_disc_overlap = compare_refs(bayes_discoveries)$all %>%
                       group_by(comparison,ref_grp) %>%
                       tally()
 
-
-
 bayes_perc_df = ref_grp_perc_overlap(bayes_disc_overlap)
 
-
-ggplot(bayes_perc_df, aes(x=comparison,y=perc_overlap,fill=comparison)) +
-  geom_col(show.legend = F, alpha=.8) +
-  scale_x_discrete(labels=c("cBio_TP" = "Chang True Positives", 
-                            "Chang_TP" = "Chang Predictions",
-                            "consensus" = "Consensus Positives",
-                            "Brown_TP" = 'Brown "Driver"',
-                            "Brown_FP" = 'Brown "Passenger"',
-                            "Mutagene_TP" = 'Li "Non-netural"',
-                            "Mutagene_FP" = 'Li "Netural"',
-                            "UNK" = "No mentions")) +
-  facet_grid(~ref_grp, 
-             labeller = labeller(ref_grp = ref_labels),
-             scale = "free",space="free") +
-  theme(axis.text.x = element_text(angle=45,hjust=1),
-        axis.title.x = element_blank(),
-        legend.position="top"
-        ) +
-  ylab("Proportion Identified")
 
 new_comp_df = bind_rows(comp_df,bayes_perc_df %>% 
                           mutate(disc_method = "Bayes")) %>%
@@ -598,33 +542,7 @@ ggplot(new_comp_df, aes(x=comparison,y=perc_overlap)) +
                       labels = c("Bonferroni C.I.", "B-Y C.I.", 
                                  "Bonferroni q-value","B-Y q-value",
                                  "Bayes p-value"))
-ggsave('plots/Report_bayes_test_ref.pdf',height=12,units = "cm")
-```
-
-```{r}
-bayes_pwr_df = compare_refs(bayes_discoveries,'data/all_TPs.csv','data/potential_FP.csv',
-                          'data/full_cosmic.csv')$all %>%
-                  mutate(effect_size_h = 2*(asin(sqrt(obs.mu)) - asin(sqrt(E.mu))),
-                         power = std_power(effect_size_h),
-                         beta = 1-power,
-                         ref_grp = factor(ref_grp,levels=c("FP","TP","TN"))
-                  )
-
-ggplot(bayes_pwr_df, aes(x=log(bayes_p), y=log(beta))) +
-  # geom_bin2d(binwidth = pixel_size) +
-  geom_point(alpha=.3) +
-  facet_wrap(~ref_grp,
-             labeller = labeller(ref_grp = ref_labels, comparison = comparison_labels)) +
-  xlab("log(Type I error)") + ylab("log(Type II error)") +
-  scale_color_discrete(labels=c("cBio_TP" = "Chang True Positives",
-                            "Chang_TP" = "Chang Predictions",
-                            "consensus" = "Consensus Positives",
-                            "Brown_TP" = 'Brown "Driver"',
-                            "Brown_FP" = 'Brown "Passenger"',
-                            "Mutagene_TP" = 'Li "Non-netural"',
-                            "Mutagene_FP" = 'Li "Netural"',
-                            "UNK" = "No mentions"
-                            ))
+# ggsave('plots/Report_bayes_test_ref.pdf',height=12,units = "cm")
 ```
 
 ## Cross-sectional metrics
@@ -652,12 +570,8 @@ filter_rate = function(crit_risk,crit_ES) {
 ES_df = data_pvals %>%
           mutate(effect_size_h = 2*(asin(sqrt(obs.mu)) - asin(sqrt(E.mu))))
 
-ref_ES = compare_refs(ES_df,'data/all_TPs.csv','data/potential_FP.csv',
-                          'data/full_cosmic.csv')$all %>%
-            mutate(ref_grp = factor(ref_grp,levels=c("FP","TP","TN"))) #%>%
-            # pivot_longer(c(BYq_cohen_beta,BFCI_cohen_beta),
-            #              names_to = "sig_method",
-            #              values_to = "beta")
+ref_ES = compare_refs(ES_df)$all %>%
+            mutate(ref_grp = factor(ref_grp,levels=c("FP","TP","TN")))
 
 ggplot(ref_ES, aes(x=comparison,y=log(effect_size_h),color=comparison)) +
   geom_boxplot(show.legend = F)+
@@ -676,13 +590,13 @@ ggplot(ref_ES, aes(x=comparison,y=log(effect_size_h),color=comparison)) +
                             )) +
   theme(axis.text.x = element_text(angle=45,hjust=1),
         axis.title.x = element_blank(),
-        ) #+
-  # geom_hline(yintercept=-4.5,linetype="dashed")
-ggsave('plots/Report_ref_effect_size.pdf')
+        ) 
+
+# ggsave('plots/Report_ref_effect_size.pdf')
 
 high_ES = ES_df %>% filter(effect_size_h>exp(-4.5)) %>% select(Codon_Id) %>% unique()
 
-sig_ES_overlap = compare_dfs(high_ES)$all %>%
+sig_ES_overlap = compare_refs(high_ES,data_TPs, data_FPs, data_COSMIC)$all %>%
                       group_by(comparison,ref_grp) %>%
                       tally()
 
@@ -690,36 +604,10 @@ sig_ES_perc = ref_grp_perc_overlap(sig_ES_overlap)
 ```
 ## Discriminatory power: Effect Size
 ```{r}
-filter_es1= function(crit_es1) {
-  filtered_data = ES_df %>% filter(effect_size_h < exp(crit_es1))
-  if (!is.null(nrow(compare_refs(filtered_data,'data/all_TPs.csv','data/potential_FP.csv',
-                          'data/full_cosmic.csv')$div))) {
-    record_overlap = compare_refs(filtered_data,'data/all_TPs.csv','data/potential_FP.csv',
-                          'data/full_cosmic.csv')$div %>%
-                          mutate(ref_label = as.factor(ref_label)) %>%
-                          group_by(ref_label) %>% tally()
-    record_overlap_perc = label_perc_overlap(record_overlap) %>%
-                          replace(is.na(.), 0)
-  } else {return(data.frame())}
-
-  return(record_overlap_perc)
-}
-
-es1 = seq(-10,0,by=.01) #c(seq(0,.002,by=1e-5),seq(.01,1,by=.01))
-
-es1_table = data.frame(neg_rate=numeric(length(es1)), pos_rate=numeric(length(es1)))
-for (i in 1:length(es1)){
-  if (i %% 50 == 0){
-    print(es1[i])
-  }
-    results = filter_es1(es1[i])
-    if (nrow(results)<1){
-      next
-    }
-    es1_table[i,] = results$perc_overlap
-}
-
+es1 = seq(-10,0,by=.01)
+es1_table = find_divergence(ES_df, es1, 'effect_size_h')
 es1_results = bind_cols(es1_table,list(es=es1))
+
 # write.csv(es1_results,'data/divergence_es1_data.csv')
 es1_results = read.csv('data/divergence_es1_data.csv')
 es1_divergence = es1_results %>% mutate(rate_diff = abs(pos_rate-neg_rate)) %>% arrange(desc(rate_diff)) %>% top_n(1)
@@ -751,9 +639,7 @@ ggsave("plots/Report_div_es1.pdf") #,width = 15, height = 7, units = "cm")
 val_high_ES = val_risk_ES_data %>%
                     filter(effect_size_h > exp(es1_divergence$es))
 
-val_high_ES_results = compare_refs(val_high_ES,'data/validation_all_TPs.csv',
-                                   'data/validation_FP.csv',
-                                   'data/val_full_cosmic.csv')$all %>%
+val_high_ES_results = compare_refs(val_high_ES,val_TPs, val_FPs, val_COSMIC)$all %>%
                 mutate(ref_grp = factor(ref_grp,
                                          levels=c("FP","TP","TN"))) %>%
                 group_by(ref_grp,comparison) %>% tally()
@@ -786,38 +672,7 @@ ggplot(val_ES_eval %>%
         ) +
   coord_cartesian(ylim=c(0,.08)) +
   ylab("Proportion Identified")
-ggsave("plots/Report_val_es_eval.pdf")
-```
-## threshold val rates
-```{r}
-es = seq(-12,0,by=.01)
-es_table = data.frame(neg_rate=numeric(length(es)), pos_rate=numeric(length(es)))
-for (i in 1:length(es)){
-  if (i %% 50 == 0){
-    print(es[i])
-  }
-  results = filter_rate(0,es[i])
-  es_table[i,] = results$perc_overlap
-}
-
-es_results = bind_cols(es_table,list(es=es))
-divergence = es_results %>% mutate(rate_diff = abs(pos_rate-neg_rate)) %>% arrange(desc(rate_diff)) %>% top_n(1)
-
-es_roc =  es_results%>% 
-          pivot_longer(c(pos_rate,neg_rate),
-                          names_to = "label",
-                          values_to = "rate"
-                          ) %>%
-          mutate(label = factor(label,levels=c("pos_rate","neg_rate")))
-
-ggplot(es_roc, aes(x=es,y=rate,color=label)) +
-  geom_line() +
-  geom_vline(xintercept = divergence$es, linetype="dashed")+
-  scale_color_discrete(name = "", 
-                      labels = c("Potential Positives","Potential Negatives")) +
-  theme(legend.position="top") +
-  xlab("log(Effect Size)") +
-  annotate("text", x = divergence$es+.5, y = .45, label = round(divergence$es,2))
+# ggsave("plots/Report_val_es_eval.pdf")
 ```
 
 ## Risk
@@ -839,8 +694,7 @@ risks_df = pval_df %>%
                    risk_diff = (obs.mu - E.mu)/total_patients
                    )
 
-all_riskXq = compare_refs(risks_df,'data/all_TPs.csv','data/potential_FP.csv',
-                          'data/full_cosmic.csv')$all %>%
+all_riskXq = compare_refs(risks_df)$all %>%
               pivot_longer(c(risk_ratio,odds_ratio,risk_diff),
                            names_to = "measure",
                            values_to = "risk") %>%
@@ -872,13 +726,12 @@ ggplot(all_riskXq %>% filter(measure == "risk_ratio"),
         axis.title.x = element_blank(),
         ) +
   ylab("log(Risk Ratio)")
-ggsave("plots/Report_ref_risk_ratio.pdf")
+# ggsave("plots/Report_ref_risk_ratio.pdf")
 ```
 ```{r}
 sig_risk = all_discoveries %>% mutate(risk_ratio = obs.mu/E.mu) %>% filter(risk_ratio > exp(3)) %>% select(Codon_Id) %>% unique()
 
-sig_risk_overlap = compare_refs(sig_risk,'data/all_TPs.csv','data/potential_FP.csv',
-                          'data/full_cosmic.csv')$all %>%
+sig_risk_overlap = compare_refs(sig_risk)$all %>%
                       group_by(comparison,ref_grp) %>%
                       tally()
 
@@ -887,61 +740,16 @@ sig_risk_perc = ref_grp_perc_overlap(sig_risk_overlap)
 all_risk = ref_sig_val %>%
             mutate(risk_ratio = obs.mu/E.mu)
 
-all_risk_labeled = compare_refs(all_risk,'data/all_TPs.csv','data/potential_FP.csv',
-                          'data/full_cosmic.csv')$all %>%
+all_risk_labeled = compare_refs(all_risk)$all %>%
                       group_by(comparison,ref_grp) %>%
                       tally()
-
-ggplot(all_risk, aes(x=comparison,y=log(risk_ratio),color=comparison)) +
-  geom_boxplot(show.legend = F) +
-  scale_x_discrete(labels=c("cBio_TP" = "Chang True Positives", 
-                            "Chang_TP" = "Chang Predictions",
-                            "consensus" = "Consensus Positives",
-                            "Brown_TP" = 'Brown "Driver"',
-                            "Brown_FP" = 'Brown "Passenger"',
-                            "Mutagene_TP" = 'Li "Non-netural"',
-                            "Mutagene_FP" = 'Li "Netural"',
-                            "UNK" = "No mentions")) +
-  facet_grid(~ref_grp, 
-             labeller = labeller(ref_grp = ref_labels),
-             scale = "free",space="free") +
-  theme(axis.text.x = element_text(angle=45,hjust=1),
-        axis.title.x = element_blank()) +
-  ylab("log(Risk Ratio)") +
-  geom_hline(yintercept = 3, linetype="dashed")
 ```
 ## Discriminatory power: risk
 ```{r}
-filter_rr1= function(crit_rr1) {
-  filtered_data = risks_df %>% filter(risk_ratio < exp(crit_rr1))
-  if (!is.null(nrow(compare_refs(filtered_data,'data/all_TPs.csv','data/potential_FP.csv',
-                          'data/full_cosmic.csv')$div))) {
-    record_overlap = compare_refs(filtered_data,'data/all_TPs.csv','data/potential_FP.csv',
-                          'data/full_cosmic.csv')$div %>%
-                          mutate(ref_label = as.factor(ref_label)) %>%
-                          group_by(ref_label) %>% tally()
-    record_overlap_perc = label_perc_overlap(record_overlap) %>%
-                          replace(is.na(.), 0)
-  } else {return(data.frame())}
-
-  return(record_overlap_perc)
-}
-
 rr1 = seq(-1,12,by=.01)
-
-rr1_table = data.frame(neg_rate=numeric(length(rr1)), pos_rate=numeric(length(rr1)))
-for (i in 1:length(rr1)){
-  if (i %% 50 == 0){
-    print(rr1[i])
-  }
-    results = filter_rr1(rr1[i])
-    if (nrow(results)<1){
-      next
-    }
-    rr1_table[i,] = results$perc_overlap
-}
-
+rr1_table = find_divergence(risks_df, rr1, 'risk_ratio')
 rr1_results = bind_cols(rr1_table,list(rr=rr1))
+
 # write.csv(alpha_results,'data/divergence_rr1_data.csv')
 rr1_results = read.csv('data/divergence_rr1_data.csv')
 rr1_divergence = rr1_results %>% mutate(rate_diff = abs(pos_rate-neg_rate)) %>% arrange(desc(rate_diff)) %>% top_n(1)
@@ -976,9 +784,7 @@ val_ref_perc_overlap = function(result_df) return(full_join(result_df,val_ref_ct
 val_high_risk = val_risk_ES_data %>%
                     filter(risk_ratio > exp(rr1_divergence$rr))
 
-val_high_risk_results = compare_refs(val_high_risk,'data/validation_all_TPs.csv',
-                                   'data/validation_FP.csv',
-                                   'data/val_full_cosmic.csv')$all %>%
+val_high_risk_results = compare_refs(val_high_risk, val_TPs, val_FPs, val_COSMIC)$all %>%
                 mutate(ref_grp = as.factor(ref_grp)) %>%
                 group_by(ref_grp,comparison) %>% tally()
 
@@ -1092,15 +898,12 @@ ggsave('plots/Report_CS_results.pdf')
 ```{r}
 risks_ES_data = pval_df %>%
                   mutate(risk_ratio = obs.mu/E.mu,
-                         
                          )
 
 val_rXES_df = val_risk_ES_data %>%
                     filter(risk_ratio > exp(3), effect_size_h > exp(-4.5))
 
-val_rXES_results = compare_refs(val_rXES_df,'data/validation_all_TPs.csv',
-                                   'data/validation_FP.csv',
-                                   'data/val_full_cosmic.csv')$all %>%
+val_rXES_results = compare_refs(val_rXES_df, val_TPs, val_FPs, val_COSMIC)$all %>%
                         mutate(ref_grp = as.factor(ref_grp)) %>%
                         group_by(ref_grp,comparison) %>% tally()
 

@@ -1,7 +1,6 @@
-ref_overlap_ct = function(data, ref_TP_file, ref_FP_file, cosmic_file, label=F){
-  our_full_cosmic = read.csv(cosmic_file)
-  our_TPs = read.csv(ref_TP_file) %>% mutate(ref_grp = 'TP')
-  our_FPs = read.csv(ref_FP_file) %>% mutate(ref_grp = 'FP')
+ref_overlap_ct = function(data, all_TPs, all_FPs, our_full_cosmic, label=F){
+  our_TPs = all_TPs %>% mutate(ref_grp = 'TP')
+  our_FPs = all_FPs %>% mutate(ref_grp = 'FP')
   all_drivers = bind_rows(our_TPs,our_FPs) %>% select(Codon_Id,comparison) %>% unique()
   our_TNs = anti_join(data,all_drivers, by='Codon_Id') %>% anti_join(our_full_cosmic, by='Codon_Id')  %>% mutate(ref_grp = 'TN',comparison='UNK')
   
@@ -19,8 +18,9 @@ ref_overlap_ct = function(data, ref_TP_file, ref_FP_file, cosmic_file, label=F){
             tally(name="ref_records"))
 }
 
-compare_refs = function(df,ref_TP_file,ref_FP_file, cosmic_file) {
-    all_TPs = read.csv(ref_TP_file)
+compare_refs = function(df,all_TPs = read.csv('data/all_TPs.csv'),
+                        all_FPs = read.csv('data/potential_FP.csv'), 
+                        our_full_cosmic = read.csv('data/full_cosmic.csv')) {
     our_cBios = all_TPs %>% filter(comparison=='chang_TP')
     our_changs = all_TPs %>% filter(comparison=='chang_pred')
     our_browns = all_TPs %>% filter(comparison=='brown_TP')
@@ -30,11 +30,9 @@ compare_refs = function(df,ref_TP_file,ref_FP_file, cosmic_file) {
                         inner_join(our_cBios,our_changs, by='Codon_Id'),
                         our_browns, by='Codon_Id'),
                       our_mutagenes_TP, by='Codon_Id') %>% mutate(comparison='consensus')
-    all_FPs = read.csv(ref_FP_file)
     our_mutagenes_FP = all_FPs %>% filter(comparison=='li_FP')
     our_brown_FP = all_FPs %>% filter(comparison=='brown_FP')
-    our_full_cosmic = read.csv(cosmic_file)
-  
+
     cBio_results = df %>% semi_join(our_cBios, by="Codon_Id") %>% mutate(comparison='chang_TP')
     chang_results = df %>% semi_join(our_changs, by="Codon_Id") %>% mutate(comparison='chang_pred')
     brown_TP_results = df %>% semi_join(our_browns, by="Codon_Id") %>% mutate(comparison='brown_TP')

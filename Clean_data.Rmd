@@ -17,9 +17,9 @@ raw_data = read.delim("data/mutations_data.txt", sep="\t")
 
 snv_df = as_tibble(raw_data) %>%
           filter(Variant_Classification == "Missense_Mutation" & Variant_Type == "SNP") %>%
-          select('Tumor_Sample_Barcode','Hugo_Symbol','Entrez_Gene_Id','NCBI_Build',
+          select('Tumor_Sample_Barcode','Hugo_Symbol','Entrez_Gene_Id',
                            'Chromosome','Start_Position', 'End_Position','Variant_Classification',
-                           'Variant_Type','Codons','HGVSp_Short', 'Protein_position')
+                           'Variant_Type','HGVSp_Short', 'Protein_position')
 
 if (nrow(snv_df != sum(snv_df$Start_Position == snv_df$End_Position))) {
   warning("anomoly detected in filtered point mutation data.")
@@ -29,25 +29,36 @@ if (nrow(snv_df != sum(snv_df$Start_Position == snv_df$End_Position))) {
 
 data = snv_df %>%
         distinct() %>%
-        mutate(Protein_position = as.character(Protein_position),
+        mutate( Protein_position = as.character(Protein_position),
                HGVSp_Short = as.character(HGVSp_Short),
                Patient_Id = Tumor_Sample_Barcode) %>%
-          separate(Protein_position, c('Protein_Location', 'Protein_Length'), 
+          separate(Protein_position, c('Protein_Location', 'Protein_Length'),
                      "/", extra = 'drop', remove = T) %>%
-          separate(HGVSp_Short, c(NA,'Mutation'),"[.]", extra = 'drop', remove = T) %>%
+          separate(HGVSp_Short, c(NA,'Mutation'),"[.]", extra = 'drop', remove = F) %>%
           mutate(Mutated_Amino_Acid = substr(Mutation,1,nchar(Mutation)-1)) %>%
           unite("Codon_Id", Hugo_Symbol, Mutated_Amino_Acid, remove=F) %>%
-          select(Patient_Id, Hugo_Symbol, Chromosome,
-                Codon_Id, Protein_Location, Protein_Length)
+          select(Patient_Id, Hugo_Symbol, Chromosome,HGVSp_Short,
+                Codon_Id , Protein_Location, Protein_Length)
+# validation data
+# data = snv_df %>%
+#         distinct() %>%
+#         mutate(HGVSp_Short = as.character(HGVSp_Short),
+#                Patient_Id = Tumor_Sample_Barcode) %>%
+#           separate(HGVSp_Short, c(NA,'Mutation'),"[.]", extra = 'drop', remove = F) %>%
+#           mutate(Mutated_Amino_Acid = substr(Mutation,1,nchar(Mutation)-1)) %>%
+#           unite("Codon_Id", Hugo_Symbol, Mutated_Amino_Acid, remove=F) %>%
+#           select(Patient_Id, Hugo_Symbol, Chromosome,HGVSp_Short,
+#                 Codon_Id)
 
 unique_patients = length(unique(data$Patient_Id))
-grouped_cts = data %>% group_by(Codon_Id,Patient_Id) %>%
+grouped_cts = data %>% group_by(Codon_Id, HGVSp_Short,Patient_Id) %>%
                 tally(name='Observations') %>%
+                select(Codon_Id,Patient_Id) %>%
                 group_by(Codon_Id) %>%
                 tally(name='Observations') %>%
                 mutate(obs.mu = Observations/unique_patients)
 codon_Id_info = data %>% 
-                select(Hugo_Symbol, Chromosome, Codon_Id,
+                select(Hugo_Symbol, Chromosome, Codon_Id ,
                       Protein_Location, Protein_Length) %>%
                 distinct()
 grouped_data = left_join(grouped_cts, codon_Id_info, by=c('Codon_Id')) %>%
@@ -66,8 +77,8 @@ model_data = inner_join(grouped_data,baseline, by=c('Codon_Id'))
 # write.csv(model_data, file='data/model_ready_data.csv',row.names = F)
 # write.csv(model_data, file='data/validation_ready_data.csv',row.names = F)
 
-# model_data = read.csv('data/validation_ready_data.csv')
 # model_data = read.csv('data/model_ready_data.csv')
+# model_data = read.csv('data/validation_ready_data.csv')
 ```
 
 ## Overlap with references: TP
